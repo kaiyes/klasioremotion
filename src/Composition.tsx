@@ -4,12 +4,15 @@ import {
   AbsoluteFill,
   Sequence,
   Img,
-  Html5Video,
-  staticFile,
 } from "remotion";
 import screen1 from "./screen1.png";
 import screen3 from "./screen3.png";
 import logo from "./logo.png";
+import coupons from "./coupons.png";
+import course from "./course.png";
+import live from "./live.png";
+import mobile from "./mobile.png";
+import webinars from "./webinars.png";
 
 const Particle = ({
   x,
@@ -606,18 +609,77 @@ const Screen1Animation = () => {
   );
 };
 
-const VideoAnimation = () => {
+const SlideshowAnimation = () => {
   const frame = useCurrentFrame();
+  const height = 720;
+  const width = 1280;
+  const centerX = width / 2;
+  const centerY = height / 2;
 
-  const opacity = interpolate(frame, [0, 5], [0, 1], {
+  const slides = [
+    { src: coupons, color: "#ff6b6b", name: "Coupons" },
+    { src: course, color: "#ffd93d", name: "Courses" },
+    { src: live, color: "#6bcb77", name: "Live" },
+    { src: mobile, color: "#4ecdc4", name: "Mobile" },
+    { src: webinars, color: "#a78bfa", name: "Webinars" },
+  ];
+
+  const slideDuration = 30;
+  const currentSlide = Math.floor(frame / slideDuration) % slides.length;
+  const slide = slides[currentSlide];
+  const slideFrame = frame % slideDuration;
+
+  const opacity = interpolate(slideFrame, [0, 5], [0, 1], {
     extrapolateRight: "clamp",
   });
 
-  const floatY = Math.sin(frame * 0.1) * 15;
-  const rotateX = Math.sin(frame * 0.06) * 8;
-  const rotateY = Math.cos(frame * 0.05) * 6;
+  const exitOpacity = interpolate(slideFrame, [25, 30], [1, 0], {
+    extrapolateRight: "clamp",
+  });
 
-  const glowIntensity = 0.8 + Math.sin(frame * 0.1) * 0.2;
+  const scale = interpolate(slideFrame, [0, 15], [0.5, 1], {
+    extrapolateRight: "clamp",
+  });
+
+  const rotateZ = interpolate(
+    slideFrame,
+    [0, 15, 25, 30],
+    [currentSlide % 2 === 0 ? 15 : currentSlide % 2 === 1 ? -15 : 0, 0, 0, 0],
+    {
+      extrapolateRight: "clamp",
+    },
+  );
+
+  const translateX = interpolate(
+    slideFrame,
+    [0, 15, 30],
+    [centerX - 200, centerX, centerX],
+    {
+      extrapolateRight: "clamp",
+    },
+  );
+
+  const floatY = Math.sin(frame * 0.08) * 8;
+  const rotateX = Math.sin(frame * 0.05) * 4;
+  const rotateY = Math.cos(frame * 0.04) * 3;
+
+  const glowIntensity = 0.8 + Math.sin(frame * 0.1) * 0.3;
+  const pulseScale = 1 + Math.sin(frame * 0.15) * 0.03;
+
+  const particles = Array.from({ length: 8 }).map((_, i) => {
+    const angle = (i / 8) * Math.PI * 2;
+    const distance = 150 + Math.sin(frame * 0.05 + i) * 30;
+    const px = centerX + Math.cos(angle) * distance;
+    const py = centerY + Math.sin(angle) * distance;
+    const scale = 0.5 + Math.sin(frame * 0.1 + i) * 0.3;
+
+    return {
+      x: px,
+      y: py,
+      scale,
+      color: slide.color,
+    };
+  });
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#0a0a0a" }}>
@@ -631,9 +693,27 @@ const VideoAnimation = () => {
           display: "flex",
           justifyContent: "center",
           alignItems: "center",
-          perspective: "1500px",
+          perspective: "2000px",
         }}
       >
+        {particles.map((p, i) => (
+          <div
+            key={i}
+            style={{
+              position: "absolute",
+              left: p.x,
+              top: p.y,
+              width: 12,
+              height: 12,
+              borderRadius: "50%",
+              backgroundColor: p.color,
+              opacity: 0.6,
+              transform: `scale(${p.scale})`,
+              boxShadow: `0 0 15px ${p.color}`,
+            }}
+          />
+        ))}
+
         <div
           style={{
             position: "relative",
@@ -642,112 +722,144 @@ const VideoAnimation = () => {
             borderRadius: "20px",
             backgroundColor: "#111",
             boxShadow: `
-              0 0 60px rgba(100, 200, 255, ${glowIntensity * 0.3}),
-              0 0 120px rgba(100, 200, 255, ${glowIntensity * 0.15}),
-              0 30px 60px rgba(0, 0, 0, 0.5)
+              0 0 80px rgba(${parseInt(slide.color.slice(1, 3), 16)}, ${parseInt(slide.color.slice(3, 5), 16)}, ${parseInt(slide.color.slice(5, 7), 16)}, ${glowIntensity * 0.4}),
+              0 0 150px rgba(${parseInt(slide.color.slice(1, 3), 16)}, ${parseInt(slide.color.slice(3, 5), 16)}, ${parseInt(slide.color.slice(5, 7), 16)}, ${glowIntensity * 0.2}),
+              0 40px 80px rgba(0, 0, 0, 0.6)
             `,
             transform: `
               translateY(${floatY}px)
               rotateX(${rotateX}deg)
               rotateY(${rotateY}deg)
-              translateZ(50px)
+              translateZ(80px)
             `,
             transformStyle: "preserve-3d",
-            transition: "transform 0.1s ease-out",
-            opacity,
+            opacity: exitOpacity,
           }}
         >
           <div
             style={{
               position: "absolute",
-              top: "-3px",
-              left: "-3px",
-              right: "-3px",
-              bottom: "-3px",
-              borderRadius: "23px",
-              background: "linear-gradient(135deg, #00d4ff, #0099ff, #0066cc)",
+              top: "-4px",
+              left: "-4px",
+              right: "-4px",
+              bottom: "-4px",
+              borderRadius: "24px",
+              background: `linear-gradient(135deg, ${slide.color}, ${slide.color}88)`,
               zIndex: -1,
-              opacity: 0.8,
+              opacity: 0.9,
             }}
           />
           <div
             style={{
               position: "absolute",
-              top: "-6px",
-              left: "-6px",
-              right: "-6px",
-              bottom: "-6px",
-              borderRadius: "26px",
+              top: "-8px",
+              left: "-8px",
+              right: "-8px",
+              bottom: "-8px",
+              borderRadius: "28px",
               background: `linear-gradient(135deg, 
-                rgba(0, 212, 255, ${glowIntensity * 0.5}), 
-                rgba(0, 153, 255, ${glowIntensity * 0.3}), 
-                rgba(0, 102, 204, ${glowIntensity * 0.2}))`,
+                ${slide.color}99, 
+                ${slide.color}77, 
+                ${slide.color}55)`,
               zIndex: -2,
-              filter: "blur(10px)",
+              filter: "blur(12px)",
             }}
           />
           <div
             style={{
               position: "absolute",
-              top: "20px",
-              left: "20px",
-              width: "10px",
-              height: "10px",
-              borderRadius: "50%",
-              backgroundColor: "#00ff88",
-              boxShadow: `0 0 10px #00ff88, 0 0 20px #00ff88`,
-              animation: "pulse 2s infinite",
-            }}
-          />
-          <div
-            style={{
-              position: "absolute",
-              top: "22px",
-              right: "25px",
+              top: "25px",
+              left: "25px",
               display: "flex",
-              gap: "8px",
+              alignItems: "center",
+              gap: "6px",
             }}
           >
             <div
               style={{
-                width: "6px",
-                height: "6px",
+                width: "8px",
+                height: "8px",
                 borderRadius: "50%",
-                backgroundColor: "#00d4ff",
+                backgroundColor: "#00ff88",
+                boxShadow: `0 0 12px #00ff88, 0 0 24px #00ff88`,
+                animation: "pulse 2s infinite",
               }}
             />
             <div
               style={{
-                width: "6px",
-                height: "6px",
+                width: "8px",
+                height: "8px",
                 borderRadius: "50%",
-                backgroundColor: "#0066cc",
+                backgroundColor: slide.color,
+                boxShadow: `0 0 8px ${slide.color}`,
               }}
             />
+          </div>
+          <div
+            style={{
+              position: "absolute",
+              top: "25px",
+              right: "30px",
+              fontSize: "14px",
+              fontWeight: "600",
+              color: "#fff",
+              textTransform: "uppercase",
+              letterSpacing: "2px",
+              opacity: 0.8,
+            }}
+          >
+            {slide.name}
           </div>
           <div
             style={{
               position: "absolute",
               top: "50%",
               left: "50%",
-              transform: "translate(-50%, -50%)",
+              transform: `translate(-50%, -50%)`,
               width: "650px",
               height: "400px",
               overflow: "hidden",
               borderRadius: "15px",
               backgroundColor: "#000",
-              boxShadow: "inset 0 0 50px rgba(0, 0, 0, 0.5)",
+              boxShadow: "inset 0 0 60px rgba(0, 0, 0, 0.6)",
             }}
           >
-            <Html5Video
-              src={staticFile("klasio.mp4")}
+            <Img
+              src={slide.src}
               style={{
                 width: "100%",
                 height: "100%",
                 objectFit: "contain",
+                transform: `rotateZ(${rotateZ}deg) scale(${scale * pulseScale})`,
               }}
             />
           </div>
+        </div>
+
+        <div
+          style={{
+            position: "absolute",
+            bottom: "40px",
+            left: "50%",
+            transform: "translateX(-50%)",
+            display: "flex",
+            gap: "8px",
+          }}
+        >
+          {slides.map((s, i) => (
+            <div
+              key={i}
+              style={{
+                width: currentSlide === i ? "12px" : "8px",
+                height: currentSlide === i ? "12px" : "8px",
+                borderRadius: currentSlide === i ? "6px" : "50%",
+                backgroundColor: currentSlide === i ? s.color : "#333",
+                opacity: currentSlide === i ? 1 : 0.4,
+                transition: "all 0.3s ease",
+                boxShadow: currentSlide === i ? `0 0 10px ${s.color}` : "none",
+              }}
+            />
+          ))}
         </div>
       </div>
     </AbsoluteFill>
@@ -767,7 +879,7 @@ export const MyComposition = () => {
         <Screen1Animation />
       </Sequence>
       <Sequence from={270} durationInFrames={150}>
-        <VideoAnimation />
+        <SlideshowAnimation />
       </Sequence>
     </>
   );
