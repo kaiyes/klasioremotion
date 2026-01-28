@@ -291,6 +291,9 @@ const ScreenAnimation = () => {
     frame >= 16 ? 1 + Math.sin((frame - 16) * 0.25) * 0.05 : 1;
   const onlineRotate = frame >= 16 ? Math.sin((frame - 16) * 0.15) * 2 : 0;
 
+  const earnScale = frame >= 16 ? 1 + Math.sin((frame - 16) * 0.25) * 0.05 : 1;
+  const earnRotate = frame >= 16 ? Math.sin((frame - 16) * 0.15) * 2 : 0;
+
   const floatY = frame >= 11 ? Math.sin((frame - 11) * 0.15) * 8 : 0;
   const floatRotate = frame >= 11 ? Math.sin((frame - 11) * 0.1) * 3 : 0;
 
@@ -359,7 +362,17 @@ const ScreenAnimation = () => {
             fontFamily: "Arial, sans-serif",
           }}
         >
-          you can earn by teaching that skill{" "}
+          you can{" "}
+          <span
+            style={{
+              color: "#22c55e",
+              display: "inline-block",
+              transform: `scale(${earnScale}) rotate(${earnRotate}deg)`,
+            }}
+          >
+            earn
+          </span>{" "}
+          by teaching that skill{" "}
           <span
             style={{
               color: "#22c55e",
