@@ -4,6 +4,8 @@ import {
   AbsoluteFill,
   Sequence,
   Img,
+  Html5Video,
+  staticFile,
 } from "remotion";
 import screen1 from "./screen1.png";
 import screen3 from "./screen3.png";
@@ -23,9 +25,9 @@ const Particle = ({
   const frame = useCurrentFrame();
   const startFrame = 10 + delay;
   const duration = 15;
-  const endFrame = 85;
+  const endFrame = 55;
 
-  if (frame < startFrame || frame > endFrame + 4) return null;
+  if (frame < startFrame || frame > endFrame + 5) return null;
 
   const progress = Math.min((frame - startFrame) / duration, 1);
   const angle = (index / 12) * Math.PI * 2;
@@ -92,6 +94,9 @@ const LogoAnimation = () => {
   const easyWiggle = frame >= 22 ? Math.sin((frame - 22) * 0.3) * 3 : 0;
   const easyPulse = frame >= 22 ? 1 + Math.sin((frame - 22) * 0.2) * 0.05 : 1;
 
+  const logoJiggle = frame >= 11 ? Math.sin((frame - 11) * 0.15) * 1.5 : 0;
+  const logoPulse = frame >= 11 ? 1 + Math.sin((frame - 11) * 0.1) * 0.02 : 0;
+
   return (
     <AbsoluteFill style={{ backgroundColor: "#fff" }}>
       <div
@@ -113,7 +118,7 @@ const LogoAnimation = () => {
             width: 450,
             height: "auto",
             opacity,
-            transform: `translateY(${translateY - height / 2}px)`,
+            transform: `translateY(${translateY - height / 2}px) rotate(${logoJiggle}deg) scale(${logoPulse})`,
           }}
         />
         <div
@@ -283,6 +288,9 @@ const ScreenAnimation = () => {
     frame >= 16 ? 1 + Math.sin((frame - 16) * 0.25) * 0.05 : 1;
   const onlineRotate = frame >= 16 ? Math.sin((frame - 16) * 0.15) * 2 : 0;
 
+  const floatY = frame >= 11 ? Math.sin((frame - 11) * 0.15) * 8 : 0;
+  const floatRotate = frame >= 11 ? Math.sin((frame - 11) * 0.1) * 3 : 0;
+
   return (
     <AbsoluteFill style={{ backgroundColor: "#fff" }}>
       <div
@@ -327,8 +335,8 @@ const ScreenAnimation = () => {
             height: "auto",
             opacity,
             transform: `
-              translate(${translateX - centerX}px, ${centerY - height / 2}px)
-              rotate(${rotation}deg)
+              translate(${translateX - centerX}px, ${centerY - height / 2 + floatY}px)
+              rotate(${rotation + floatRotate}deg)
               scale(${scale})
               skewX(${skewX}deg)
             `,
@@ -477,6 +485,9 @@ const Screen1Animation = () => {
     extrapolateRight: "clamp",
   });
 
+  const bounceY = frame >= 11 ? Math.sin((frame - 11) * 0.2) * 10 : 0;
+  const bounceScale = frame >= 11 ? 1 + Math.sin((frame - 11) * 0.2) * 0.02 : 0;
+
   return (
     <AbsoluteFill style={{ backgroundColor: "#fff" }}>
       <div
@@ -512,9 +523,9 @@ const Screen1Animation = () => {
             height: "auto",
             opacity,
             transform: `
-              translate(${translateX - centerX}px, ${centerY - height / 2}px)
+              translate(${translateX - centerX}px, ${centerY - height / 2 + bounceY}px)
               rotate(${rotation}deg)
-              scale(${scale})
+              scale(${scale + bounceScale})
               skewX(${skewX}deg)
             `,
             transformOrigin: "center",
@@ -595,6 +606,154 @@ const Screen1Animation = () => {
   );
 };
 
+const VideoAnimation = () => {
+  const frame = useCurrentFrame();
+
+  const opacity = interpolate(frame, [0, 5], [0, 1], {
+    extrapolateRight: "clamp",
+  });
+
+  const floatY = Math.sin(frame * 0.1) * 15;
+  const rotateX = Math.sin(frame * 0.06) * 8;
+  const rotateY = Math.cos(frame * 0.05) * 6;
+
+  const glowIntensity = 0.8 + Math.sin(frame * 0.1) * 0.2;
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: "#0a0a0a" }}>
+      <div
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%",
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          perspective: "1500px",
+        }}
+      >
+        <div
+          style={{
+            position: "relative",
+            width: "700px",
+            height: "450px",
+            borderRadius: "20px",
+            backgroundColor: "#111",
+            boxShadow: `
+              0 0 60px rgba(100, 200, 255, ${glowIntensity * 0.3}),
+              0 0 120px rgba(100, 200, 255, ${glowIntensity * 0.15}),
+              0 30px 60px rgba(0, 0, 0, 0.5)
+            `,
+            transform: `
+              translateY(${floatY}px)
+              rotateX(${rotateX}deg)
+              rotateY(${rotateY}deg)
+              translateZ(50px)
+            `,
+            transformStyle: "preserve-3d",
+            transition: "transform 0.1s ease-out",
+            opacity,
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              top: "-3px",
+              left: "-3px",
+              right: "-3px",
+              bottom: "-3px",
+              borderRadius: "23px",
+              background: "linear-gradient(135deg, #00d4ff, #0099ff, #0066cc)",
+              zIndex: -1,
+              opacity: 0.8,
+            }}
+          />
+          <div
+            style={{
+              position: "absolute",
+              top: "-6px",
+              left: "-6px",
+              right: "-6px",
+              bottom: "-6px",
+              borderRadius: "26px",
+              background: `linear-gradient(135deg, 
+                rgba(0, 212, 255, ${glowIntensity * 0.5}), 
+                rgba(0, 153, 255, ${glowIntensity * 0.3}), 
+                rgba(0, 102, 204, ${glowIntensity * 0.2}))`,
+              zIndex: -2,
+              filter: "blur(10px)",
+            }}
+          />
+          <div
+            style={{
+              position: "absolute",
+              top: "20px",
+              left: "20px",
+              width: "10px",
+              height: "10px",
+              borderRadius: "50%",
+              backgroundColor: "#00ff88",
+              boxShadow: `0 0 10px #00ff88, 0 0 20px #00ff88`,
+              animation: "pulse 2s infinite",
+            }}
+          />
+          <div
+            style={{
+              position: "absolute",
+              top: "22px",
+              right: "25px",
+              display: "flex",
+              gap: "8px",
+            }}
+          >
+            <div
+              style={{
+                width: "6px",
+                height: "6px",
+                borderRadius: "50%",
+                backgroundColor: "#00d4ff",
+              }}
+            />
+            <div
+              style={{
+                width: "6px",
+                height: "6px",
+                borderRadius: "50%",
+                backgroundColor: "#0066cc",
+              }}
+            />
+          </div>
+          <div
+            style={{
+              position: "absolute",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%, -50%)",
+              width: "650px",
+              height: "400px",
+              overflow: "hidden",
+              borderRadius: "15px",
+              backgroundColor: "#000",
+              boxShadow: "inset 0 0 50px rgba(0, 0, 0, 0.5)",
+            }}
+          >
+            <Html5Video
+              src={staticFile("klasio.mp4")}
+              style={{
+                width: "100%",
+                height: "100%",
+                objectFit: "contain",
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    </AbsoluteFill>
+  );
+};
+
 export const MyComposition = () => {
   return (
     <>
@@ -606,6 +765,9 @@ export const MyComposition = () => {
       </Sequence>
       <Sequence from={165} durationInFrames={105}>
         <Screen1Animation />
+      </Sequence>
+      <Sequence from={270} durationInFrames={150}>
+        <VideoAnimation />
       </Sequence>
     </>
   );
