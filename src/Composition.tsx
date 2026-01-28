@@ -860,6 +860,51 @@ const SlideshowAnimation = () => {
               }}
             />
           ))}
+          {Array.from({ length: 12 }).map((_, i) => (
+            <Particle
+              key={i + 72}
+              x={centerX - 100}
+              y={centerY - 120}
+              delay={4}
+              index={i}
+            />
+          ))}
+          {Array.from({ length: 12 }).map((_, i) => (
+            <Particle
+              key={i + 84}
+              x={centerX + 100}
+              y={centerY - 120}
+              delay={3}
+              index={i}
+            />
+          ))}
+          {Array.from({ length: 12 }).map((_, i) => (
+            <Particle
+              key={i + 96}
+              x={centerX - 60}
+              y={centerY - 140}
+              delay={5}
+              index={i}
+            />
+          ))}
+          {Array.from({ length: 12 }).map((_, i) => (
+            <Particle
+              key={i + 108}
+              x={centerX + 60}
+              y={centerY - 140}
+              delay={4}
+              index={i}
+            />
+          ))}
+          {Array.from({ length: 12 }).map((_, i) => (
+            <Particle
+              key={i + 120}
+              x={centerX}
+              y={centerY - 170}
+              delay={6}
+              index={i}
+            />
+          ))}
         </div>
       </div>
     </AbsoluteFill>
