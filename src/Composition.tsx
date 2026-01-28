@@ -1006,7 +1006,9 @@ const FinalAnimation = () => {
                 ? Math.sin((frame - wordStart - 10) * 0.15) * 3
                 : 0;
             const hue = (i * 120) % 360;
-            const color = `hsl(${hue}, 70%, 50%)`;
+            const color = i === 0 ? "#000" : `hsl(${hue}, 70%, 50%)`;
+            const shadow =
+              i === 0 ? "none" : `0 0 20px hsla(${hue}, 70%, 50%, 0.3)`;
 
             return (
               <span
@@ -1016,7 +1018,7 @@ const FinalAnimation = () => {
                   transform: `translateX(${translateX}px) scale(${scale}) rotate(${rotate}deg)`,
                   display: "inline-block",
                   color,
-                  textShadow: `0 0 20px hsla(${hue}, 70%, 50%, 0.3)`,
+                  textShadow: shadow,
                 }}
               >
                 {word}
