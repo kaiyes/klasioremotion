@@ -427,8 +427,8 @@ const AnimatedShape = ({
       <div
         style={{
           ...commonStyle,
-          width: 40,
-          height: 40,
+          width: 80,
+          height: 80,
           borderRadius: "50%",
           backgroundColor: color,
         }}
@@ -439,8 +439,8 @@ const AnimatedShape = ({
       <div
         style={{
           ...commonStyle,
-          width: 35,
-          height: 35,
+          width: 70,
+          height: 70,
           backgroundColor: color,
         }}
       />
@@ -452,9 +452,9 @@ const AnimatedShape = ({
           ...commonStyle,
           width: 0,
           height: 0,
-          borderLeft: "20px solid transparent",
-          borderRight: "20px solid transparent",
-          borderBottom: `35px solid ${color}`,
+          borderLeft: "40px solid transparent",
+          borderRight: "40px solid transparent",
+          borderBottom: `70px solid ${color}`,
         }}
       />
     );
