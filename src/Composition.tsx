@@ -717,8 +717,8 @@ const SlideshowAnimation = () => {
         <div
           style={{
             position: "relative",
-            width: "700px",
-            height: "450px",
+            width: "850px",
+            height: "550px",
             borderRadius: "20px",
             backgroundColor: "#111",
             boxShadow: `
@@ -816,8 +816,8 @@ const SlideshowAnimation = () => {
               top: "50%",
               left: "50%",
               transform: `translate(-50%, -50%)`,
-              width: "650px",
-              height: "400px",
+              width: "800px",
+              height: "500px",
               overflow: "hidden",
               borderRadius: "15px",
               backgroundColor: "#000",
