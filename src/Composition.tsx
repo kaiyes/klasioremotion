@@ -5,7 +5,7 @@ import {
   Sequence,
   Img,
 } from "remotion";
-import screen1 from "./screen1.png";
+import screen3 from "./screen3.png";
 import logo from "./logo.png";
 
 const Particle = ({
@@ -22,9 +22,9 @@ const Particle = ({
   const frame = useCurrentFrame();
   const startFrame = 10 + delay;
   const duration = 15;
-  const endFrame = 31;
+  const endFrame = 38;
 
-  if (frame < startFrame || frame > endFrame + 5) return null;
+  if (frame < startFrame || frame > endFrame + 4) return null;
 
   const progress = Math.min((frame - startFrame) / duration, 1);
   const angle = (index / 12) * Math.PI * 2;
@@ -68,11 +68,11 @@ const LogoAnimation = () => {
     },
   );
 
-  const opacity = interpolate(frame, [31, 36], [1, 0], {
+  const opacity = interpolate(frame, [38, 42], [1, 0], {
     extrapolateRight: "clamp",
   });
 
-  const textOpacity = interpolate(frame, [12, 16, 31, 36], [0, 1, 1, 0], {
+  const textOpacity = interpolate(frame, [12, 16, 38, 42], [0, 1, 1, 0], {
     extrapolateRight: "clamp",
   });
 
@@ -259,6 +259,29 @@ const ScreenAnimation = () => {
     extrapolateRight: "clamp",
   });
 
+  const topTextOpacity = interpolate(frame, [8, 12], [0, 1], {
+    extrapolateRight: "clamp",
+  });
+
+  const topTextTranslateY = interpolate(frame, [8, 12], [-30, 0], {
+    extrapolateRight: "clamp",
+  });
+
+  const skillsScale = frame >= 12 ? 1 + Math.sin((frame - 12) * 0.3) * 0.05 : 1;
+  const skillsRotate = frame >= 12 ? Math.sin((frame - 12) * 0.2) * 2 : 0;
+
+  const bottomTextOpacity = interpolate(frame, [12, 16], [0, 1], {
+    extrapolateRight: "clamp",
+  });
+
+  const bottomTextTranslateY = interpolate(frame, [12, 16], [30, 0], {
+    extrapolateRight: "clamp",
+  });
+
+  const onlineScale =
+    frame >= 16 ? 1 + Math.sin((frame - 16) * 0.25) * 0.05 : 1;
+  const onlineRotate = frame >= 16 ? Math.sin((frame - 16) * 0.15) * 2 : 0;
+
   return (
     <AbsoluteFill style={{ backgroundColor: "#fff" }}>
       <div
@@ -271,12 +294,34 @@ const ScreenAnimation = () => {
           display: "flex",
           justifyContent: "center",
           alignItems: "center",
+          flexDirection: "column",
         }}
       >
-        <Img
-          src={screen1}
+        <div
           style={{
-            position: "absolute",
+            opacity: topTextOpacity,
+            transform: `translateY(${topTextTranslateY}px)`,
+            fontSize: "42px",
+            fontWeight: "bold",
+            color: "#000",
+            marginBottom: "60px",
+            fontFamily: "Georgia, serif",
+          }}
+        >
+          you have{" "}
+          <span
+            style={{
+              color: "#22c55e",
+              display: "inline-block",
+              transform: `scale(${skillsScale}) rotate(${skillsRotate}deg)`,
+            }}
+          >
+            Skills
+          </span>
+        </div>
+        <Img
+          src={screen3}
+          style={{
             width: 400,
             height: "auto",
             opacity,
@@ -289,6 +334,31 @@ const ScreenAnimation = () => {
             transformOrigin: "center",
           }}
         />
+        <div
+          style={{
+            opacity: bottomTextOpacity,
+            transform: `translateY(${bottomTextTranslateY}px)`,
+            fontSize: "36px",
+            fontWeight: "500",
+            color: "#333",
+            marginTop: "60px",
+            textAlign: "center",
+            maxWidth: "700px",
+            fontFamily: "Arial, sans-serif",
+          }}
+        >
+          you can earn by teaching that skill{" "}
+          <span
+            style={{
+              color: "#22c55e",
+              display: "inline-block",
+              transform: `scale(${onlineScale}) rotate(${onlineRotate}deg)`,
+            }}
+          >
+            online
+          </span>{" "}
+          !
+        </div>
       </div>
     </AbsoluteFill>
   );
@@ -297,10 +367,10 @@ const ScreenAnimation = () => {
 export const MyComposition = () => {
   return (
     <>
-      <Sequence from={0} durationInFrames={36}>
+      <Sequence from={0} durationInFrames={42}>
         <LogoAnimation />
       </Sequence>
-      <Sequence from={36} durationInFrames={40}>
+      <Sequence from={42} durationInFrames={40}>
         <ScreenAnimation />
       </Sequence>
     </>
