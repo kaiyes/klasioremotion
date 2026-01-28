@@ -924,6 +924,111 @@ const SlideshowAnimation = () => {
   );
 };
 
+const FinalAnimation = () => {
+  const frame = useCurrentFrame();
+  const height = 720;
+  const width = 1280;
+
+  const opacity = interpolate(frame, [0, 10], [0, 1], {
+    extrapolateRight: "clamp",
+  });
+
+  const logoScale = interpolate(frame, [0, 20], [0, 1], {
+    extrapolateRight: "clamp",
+  });
+
+  const logoPulse = frame >= 20 ? 1 + Math.sin((frame - 20) * 0.1) * 0.05 : 1;
+  const logoRotate = frame >= 20 ? Math.sin((frame - 20) * 0.08) * 2 : 0;
+
+  const words = ["Your", "Students", "Awaits"];
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: "#fff" }}>
+      <div
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%",
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          flexDirection: "column",
+        }}
+      >
+        <Img
+          src={logo}
+          style={{
+            width: 500,
+            height: "auto",
+            opacity,
+            transform: `scale(${logoScale * logoPulse}) rotate(${logoRotate}deg)`,
+          }}
+        />
+        <div
+          style={{
+            opacity: interpolate(frame, [15, 25], [0, 1], {
+              extrapolateRight: "clamp",
+            }),
+            display: "flex",
+            gap: "20px",
+            marginTop: "40px",
+            fontSize: "52px",
+            fontWeight: "bold",
+            color: "#000",
+          }}
+        >
+          {words.map((word, i) => {
+            const wordStart = 20 + i * 15;
+            const wordOpacity = interpolate(
+              frame,
+              [wordStart, wordStart + 10],
+              [0, 1],
+              {
+                extrapolateRight: "clamp",
+              },
+            );
+            const translateX = interpolate(
+              frame,
+              [wordStart, wordStart + 10],
+              [50 - i * 25, 0],
+              {
+                extrapolateRight: "clamp",
+              },
+            );
+            const scale =
+              frame >= wordStart + 10
+                ? 1 + Math.sin((frame - wordStart - 10) * 0.2) * 0.1
+                : 1;
+            const rotate =
+              frame >= wordStart + 10
+                ? Math.sin((frame - wordStart - 10) * 0.15) * 3
+                : 0;
+            const hue = (i * 120) % 360;
+            const color = `hsl(${hue}, 70%, 50%)`;
+
+            return (
+              <span
+                key={i}
+                style={{
+                  opacity: wordOpacity,
+                  transform: `translateX(${translateX}px) scale(${scale}) rotate(${rotate}deg)`,
+                  display: "inline-block",
+                  color,
+                  textShadow: `0 0 20px hsla(${hue}, 70%, 50%, 0.3)`,
+                }}
+              >
+                {word}
+              </span>
+            );
+          })}
+        </div>
+      </div>
+    </AbsoluteFill>
+  );
+};
+
 export const MyComposition = () => {
   return (
     <>
@@ -938,6 +1043,9 @@ export const MyComposition = () => {
       </Sequence>
       <Sequence from={270} durationInFrames={150}>
         <SlideshowAnimation />
+      </Sequence>
+      <Sequence from={420} durationInFrames={120}>
+        <FinalAnimation />
       </Sequence>
     </>
   );
