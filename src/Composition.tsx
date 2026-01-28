@@ -5,6 +5,7 @@ import {
   Sequence,
   Img,
 } from "remotion";
+import screen1 from "./screen1.png";
 import screen3 from "./screen3.png";
 import logo from "./logo.png";
 
@@ -22,7 +23,7 @@ const Particle = ({
   const frame = useCurrentFrame();
   const startFrame = 10 + delay;
   const duration = 15;
-  const endFrame = 38;
+  const endFrame = 85;
 
   if (frame < startFrame || frame > endFrame + 4) return null;
 
@@ -68,11 +69,11 @@ const LogoAnimation = () => {
     },
   );
 
-  const opacity = interpolate(frame, [38, 42], [1, 0], {
+  const opacity = interpolate(frame, [55, 60], [1, 0], {
     extrapolateRight: "clamp",
   });
 
-  const textOpacity = interpolate(frame, [12, 16, 38, 42], [0, 1, 1, 0], {
+  const textOpacity = interpolate(frame, [12, 16, 55, 60], [0, 1, 1, 0], {
     extrapolateRight: "clamp",
   });
 
@@ -364,14 +365,247 @@ const ScreenAnimation = () => {
   );
 };
 
+const AnimatedShape = ({
+  x,
+  y,
+  delay,
+  type,
+  color,
+}: {
+  x: number;
+  y: number;
+  delay: number;
+  type: "circle" | "square" | "triangle";
+  color: string;
+}) => {
+  const frame = useCurrentFrame();
+  const startFrame = 5 + delay;
+
+  if (frame < startFrame) return null;
+
+  const scale = interpolate(frame, [startFrame, startFrame + 8], [0, 1], {
+    extrapolateRight: "clamp",
+  });
+
+  const rotation =
+    frame >= startFrame + 8 ? Math.sin((frame - startFrame - 8) * 0.2) * 15 : 0;
+
+  const commonStyle = {
+    position: "absolute" as const,
+    left: x,
+    top: y,
+    transform: `scale(${scale}) rotate(${rotation}deg)`,
+    opacity: 0.8,
+  };
+
+  if (type === "circle") {
+    return (
+      <div
+        style={{
+          ...commonStyle,
+          width: 40,
+          height: 40,
+          borderRadius: "50%",
+          backgroundColor: color,
+        }}
+      />
+    );
+  } else if (type === "square") {
+    return (
+      <div
+        style={{
+          ...commonStyle,
+          width: 35,
+          height: 35,
+          backgroundColor: color,
+        }}
+      />
+    );
+  } else {
+    return (
+      <div
+        style={{
+          ...commonStyle,
+          width: 0,
+          height: 0,
+          borderLeft: "20px solid transparent",
+          borderRight: "20px solid transparent",
+          borderBottom: `35px solid ${color}`,
+        }}
+      />
+    );
+  }
+};
+
+const Screen1Animation = () => {
+  const frame = useCurrentFrame();
+  const height = 720;
+  const width = 1280;
+  const centerX = width / 2;
+  const centerY = height / 2;
+
+  const translateX = interpolate(
+    frame,
+    [0, 6, 8, 10, 11],
+    [width + 200, centerX, centerX - 80, centerX + 30, centerX],
+    {
+      extrapolateRight: "clamp",
+    },
+  );
+
+  const rotation = interpolate(frame, [0, 6], [45, 0], {
+    extrapolateRight: "clamp",
+  });
+
+  const scale = interpolate(frame, [0, 6], [0.5, 1.3], {
+    extrapolateRight: "clamp",
+  });
+
+  const skewX = interpolate(frame, [0, 6], [-15, 0], {
+    extrapolateRight: "clamp",
+  });
+
+  const opacity = interpolate(frame, [0, 5], [0, 1], {
+    extrapolateRight: "clamp",
+  });
+
+  const topTextOpacity = interpolate(frame, [8, 12], [0, 1], {
+    extrapolateRight: "clamp",
+  });
+
+  const topTextTranslateY = interpolate(frame, [8, 12], [-30, 0], {
+    extrapolateRight: "clamp",
+  });
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: "#fff" }}>
+      <div
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%",
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          flexDirection: "column",
+        }}
+      >
+        <div
+          style={{
+            opacity: topTextOpacity,
+            transform: `translateY(${topTextTranslateY}px)`,
+            fontSize: "40px",
+            fontWeight: "bold",
+            color: "#000",
+            marginBottom: "60px",
+            fontFamily: "Georgia, serif",
+          }}
+        >
+          All in on solution
+        </div>
+        <Img
+          src={screen1}
+          style={{
+            width: 400,
+            height: "auto",
+            opacity,
+            transform: `
+              translate(${translateX - centerX}px, ${centerY - height / 2}px)
+              rotate(${rotation}deg)
+              scale(${scale})
+              skewX(${skewX}deg)
+            `,
+            transformOrigin: "center",
+          }}
+        />
+      </div>
+      <AnimatedShape
+        x={200}
+        y={height / 2}
+        delay={0}
+        type="circle"
+        color="#ff6b6b"
+      />
+      <AnimatedShape
+        x={150}
+        y={height / 2 - 80}
+        delay={1}
+        type="square"
+        color="#ffd93d"
+      />
+      <AnimatedShape
+        x={180}
+        y={height / 2 + 80}
+        delay={2}
+        type="triangle"
+        color="#6bcb77"
+      />
+      <AnimatedShape
+        x={220}
+        y={height / 2 - 40}
+        delay={3}
+        type="circle"
+        color="#4ecdc4"
+      />
+      <AnimatedShape
+        x={160}
+        y={height / 2 + 40}
+        delay={1.5}
+        type="square"
+        color="#ff6b6b"
+      />
+      <AnimatedShape
+        x={1080}
+        y={height / 2}
+        delay={0.5}
+        type="circle"
+        color="#6bcb77"
+      />
+      <AnimatedShape
+        x={1130}
+        y={height / 2 - 80}
+        delay={2}
+        type="square"
+        color="#ff6b6b"
+      />
+      <AnimatedShape
+        x={1100}
+        y={height / 2 + 80}
+        delay={1}
+        type="triangle"
+        color="#ffd93d"
+      />
+      <AnimatedShape
+        x={1060}
+        y={height / 2 - 40}
+        delay={2.5}
+        type="circle"
+        color="#ffd93d"
+      />
+      <AnimatedShape
+        x={1120}
+        y={height / 2 + 40}
+        delay={1.5}
+        type="square"
+        color="#4ecdc4"
+      />
+    </AbsoluteFill>
+  );
+};
+
 export const MyComposition = () => {
   return (
     <>
-      <Sequence from={0} durationInFrames={42}>
+      <Sequence from={0} durationInFrames={60}>
         <LogoAnimation />
       </Sequence>
-      <Sequence from={42} durationInFrames={40}>
+      <Sequence from={60} durationInFrames={105}>
         <ScreenAnimation />
+      </Sequence>
+      <Sequence from={165} durationInFrames={105}>
+        <Screen1Animation />
       </Sequence>
     </>
   );
