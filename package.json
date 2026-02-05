@@ -25,7 +25,9 @@
     "dev": "remotion studio",
     "build": "remotion bundle",
     "upgrade": "remotion upgrade",
-    "lint": "eslint src && tsc"
+    "lint": "eslint src && tsc",
+    "extract-clips": "node scripts/extract-clips.js",
+    "batch-extract": "node scripts/batch-extract.js"
   },
   "sideEffects": [
     "*.css"
