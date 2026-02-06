@@ -16,6 +16,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const crypto = require("node:crypto");
+let kuromoji;
+let wanakana;
+let resvg;
+let QRCode;
 
 const DEFAULT_VIDEO_EXTS = [".mkv", ".mp4", ".webm", ".mov"];
 
@@ -48,6 +52,10 @@ function parseArgs(argv) {
     enSubsDir: null,
     rank: false,
     printTop: 0,
+    decorate: false,
+    wordList: null,
+    meaning: null,
+    highlightColor: "&H00D6FF&",
     sentenceGapMs: 800,
     maxSentenceItems: 8,
     videoExts: DEFAULT_VIDEO_EXTS,
@@ -166,6 +174,21 @@ function parseArgs(argv) {
         args.printTop = Number(value);
         takeNext();
         break;
+      case "decorate":
+        args.decorate = true;
+        break;
+      case "wordList":
+        args.wordList = value;
+        takeNext();
+        break;
+      case "meaning":
+        args.meaning = value;
+        takeNext();
+        break;
+      case "highlightColor":
+        args.highlightColor = value;
+        takeNext();
+        break;
       case "videoExts":
         args.videoExts = String(value)
           .split(",")
@@ -226,6 +249,10 @@ Options:
   --enSubsDir           English subtitle directory (for scoring)
   --rank                Rank candidates and pick the best scores instead of first matches
   --printTop            Print the top N ranked candidates with scores (default: 0)
+  --decorate            Burn JP+EN subs with furigana/romaji and highlight the query
+  --wordList            JSON list with fields {word, reading, romaji, meaning} for header/meaning lookup
+  --meaning             Override meaning text in header and EN highlight
+  --highlightColor      ASS color for highlight (BGR hex, e.g. &H00D6FF&)
   --sentenceGapMs       Max gap between subtitle items to still be the same sentence (default: 800)
   --maxSentenceItems    Max subtitle items to merge into a "sentence" (default: 8)
   --dryRun              Print planned clips / ffmpeg commands, do not run
@@ -445,6 +472,609 @@ function findEnglishForTime(enItems, startMs, endMs) {
   return "";
 }
 
+function assEscape(text) {
+  return String(text ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/{/g, "\\{")
+    .replace(/}/g, "\\}");
+}
+
+function highlightAss(text, match, colorTag, resetTag) {
+  if (!match) return assEscape(text);
+  const idx = text.indexOf(match);
+  if (idx < 0) return assEscape(text);
+  const prefix = text.slice(0, idx);
+  const mid = text.slice(idx, idx + match.length);
+  const suffix = text.slice(idx + match.length);
+  return `${assEscape(prefix)}${colorTag}${assEscape(mid)}${resetTag}${assEscape(suffix)}`;
+}
+
+function highlightAssCaseInsensitive(text, match, colorTag, resetTag) {
+  if (!match) return assEscape(text);
+  const lowerText = text.toLowerCase();
+  const lowerMatch = match.toLowerCase();
+  const idx = lowerText.indexOf(lowerMatch);
+  if (idx < 0) return assEscape(text);
+  const prefix = text.slice(0, idx);
+  const mid = text.slice(idx, idx + match.length);
+  const suffix = text.slice(idx + match.length);
+  return `${assEscape(prefix)}${colorTag}${assEscape(mid)}${resetTag}${assEscape(suffix)}`;
+}
+
+function buildTokenizer(dicPath) {
+  if (!kuromoji) kuromoji = require("kuromoji");
+  return new Promise((resolve, reject) => {
+    kuromoji.builder({ dicPath }).build((err, tokenizer) => {
+      if (err) reject(err);
+      else resolve(tokenizer);
+    });
+  });
+}
+
+function tokenizeReading(tokenizer, text) {
+  const tokens = tokenizer.tokenize(text);
+  const parts = tokens.map((t) => t.reading || t.surface_form || "");
+  return parts;
+}
+
+function toHiragana(text) {
+  if (!wanakana) wanakana = require("wanakana");
+  return wanakana.toHiragana(text);
+}
+
+function toRomaji(text) {
+  if (!wanakana) wanakana = require("wanakana");
+  return wanakana.toRomaji(text);
+}
+
+function isKanaContinuationSurface(surface) {
+  return /^[んンっッゃゅょャュョぁぃぅぇぉァィゥェォー]$/.test(surface);
+}
+
+function joinRomajiTokens(tokens, romajiTokens) {
+  const out = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const surface = tokens[i]?.surface_form || "";
+    const piece = String(romajiTokens[i] || "").trim();
+    if (!piece) continue;
+    if (out.length === 0) {
+      out.push(piece);
+      continue;
+    }
+    if (isKanaContinuationSurface(surface)) {
+      out[out.length - 1] += piece;
+      continue;
+    }
+    out.push(piece);
+  }
+  return out.join(" ");
+}
+
+function normalizeMeaning(meaning) {
+  if (!meaning) return "";
+  const first = meaning.split(/[;,.]/)[0];
+  return first.trim();
+}
+
+function msToAssTime(ms) {
+  const total = Math.max(0, ms);
+  const cs = Math.floor((total % 1000) / 10);
+  const s = Math.floor(total / 1000) % 60;
+  const m = Math.floor(total / 60000) % 60;
+  const h = Math.floor(total / 3600000);
+  return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
+}
+
+function buildAss({
+  durationMs,
+  headerText,
+  subsText,
+  highlightColor,
+}) {
+  const end = msToAssTime(durationMs + 100);
+  const header = assEscape(headerText);
+  const subs = subsText;
+  return `[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Header,Hiragino Sans,54,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,1,8,40,40,30,1
+Style: Subs,Hiragino Sans,44,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,4,1,2,60,60,40,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,${end},Header,,0,0,0,,${header}
+Dialogue: 0,0:00:00.00,${end},Subs,,0,0,0,,${subs}
+`;
+}
+
+function renderSvgToPng({ svg, output }) {
+  if (!resvg) {
+    resvg = require("@resvg/resvg-js");
+  }
+  const instance = new resvg.Resvg(svg);
+  const pngData = instance.render().asPng();
+  fs.writeFileSync(output, pngData);
+}
+
+function runFfmpegOverlay({ input, overlay, output, verbose }) {
+  const args = [
+    "-y",
+    "-i",
+    input,
+    "-loop",
+    "1",
+    "-i",
+    overlay,
+    "-filter_complex",
+    "[1:v][0:v]scale2ref=w=iw:h=ih[ovr][base];[base][ovr]overlay=0:0:format=auto",
+    "-shortest",
+    "-c:v",
+    "libx264",
+    "-pix_fmt",
+    "yuv420p",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "18",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "192k",
+    "-movflags",
+    "+faststart",
+    output,
+  ];
+  if (verbose) console.log(["ffmpeg", ...args].join(" "));
+  const res = spawnSync("ffmpeg", args, { stdio: "inherit" });
+  if (res.status !== 0) {
+    throw new Error(`ffmpeg overlay failed for ${output}`);
+  }
+}
+
+function getVideoDimensions(file) {
+  const res = spawnSync(
+    "ffprobe",
+    [
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "stream=width,height",
+      "-of",
+      "csv=s=x:p=0",
+      file,
+    ],
+    { encoding: "utf8" },
+  );
+  if (res.status !== 0) {
+    return { width: 1920, height: 1080 };
+  }
+  const [w, h] = String(res.stdout || "").trim().split("x").map(Number);
+  if (!w || !h) return { width: 1920, height: 1080 };
+  return { width: w, height: h };
+}
+
+function getMediaDurationSec(file) {
+  const res = spawnSync(
+    "ffprobe",
+    [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "default=noprint_wrappers=1:nokey=1",
+      file,
+    ],
+    { encoding: "utf8" },
+  );
+  if (res.status !== 0) return 0;
+  const d = Number(String(res.stdout || "").trim());
+  if (!Number.isFinite(d) || d <= 0) return 0;
+  return d;
+}
+
+function runFfmpegAppendTailVideo({
+  mainInput,
+  tailInput,
+  output,
+  width,
+  height,
+  tailDurationSec,
+  verbose,
+}) {
+  const filter = [
+    `[0:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1[v0]`,
+    `[1:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1[v1]`,
+    "[0:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a0]",
+    "[2:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a1]",
+    "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]",
+  ].join(";");
+
+  const args = [
+    "-y",
+    "-i",
+    mainInput,
+    "-i",
+    tailInput,
+    "-f",
+    "lavfi",
+    "-t",
+    String(tailDurationSec),
+    "-i",
+    "anullsrc=channel_layout=stereo:sample_rate=48000",
+    "-filter_complex",
+    filter,
+    "-map",
+    "[v]",
+    "-map",
+    "[a]",
+    "-c:v",
+    "libx264",
+    "-pix_fmt",
+    "yuv420p",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "18",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "192k",
+    "-ar",
+    "48000",
+    "-movflags",
+    "+faststart",
+    output,
+  ];
+  if (verbose) console.log(["ffmpeg", ...args].join(" "));
+  const res = spawnSync("ffmpeg", args, { stdio: "inherit" });
+  if (res.status !== 0) {
+    throw new Error(`ffmpeg append tail failed for ${output}`);
+  }
+}
+
+function svgEscape(text) {
+  return String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function svgHighlighted(text, match, highlightColor) {
+  if (!match) return svgEscape(text);
+  const idx = text.indexOf(match);
+  if (idx < 0) return svgEscape(text);
+  const prefix = svgEscape(text.slice(0, idx));
+  const mid = svgEscape(text.slice(idx, idx + match.length));
+  const suffix = svgEscape(text.slice(idx + match.length));
+  return `${prefix}<tspan fill="${highlightColor}">${mid}</tspan>${suffix}`;
+}
+
+function svgHighlightedCaseInsensitive(text, match, highlightColor) {
+  if (!match) return svgEscape(text);
+  const lowerText = text.toLowerCase();
+  const lowerMatch = match.toLowerCase();
+  const idx = lowerText.indexOf(lowerMatch);
+  if (idx < 0) return svgEscape(text);
+  const prefix = svgEscape(text.slice(0, idx));
+  const mid = svgEscape(text.slice(idx, idx + match.length));
+  const suffix = svgEscape(text.slice(idx + match.length));
+  return `${prefix}<tspan fill="${highlightColor}">${mid}</tspan>${suffix}`;
+}
+
+function isKanjiChar(ch) {
+  return /[一-龯]/.test(ch);
+}
+
+function charUnits(ch) {
+  if (/[A-Za-z0-9]/.test(ch)) return 0.6;
+  if (isKanjiChar(ch)) return 1.0;
+  if (/[ぁ-んァ-ン]/.test(ch)) return 1.0;
+  return 0.8;
+}
+
+function measureUnits(text) {
+  return Array.from(text).reduce((sum, ch) => sum + charUnits(ch), 0);
+}
+
+function layoutTokens(tokens, width, marginPx) {
+  const gapUnits = 0.5;
+  const tokenUnits = tokens.map((t) => Math.max(0.8, measureUnits(t.surface)));
+  const totalUnits =
+    tokenUnits.reduce((s, u) => s + u, 0) + gapUnits * Math.max(0, tokens.length - 1);
+  const available = Math.max(1, width - marginPx * 2);
+  const unitPx = available / Math.max(1, totalUnits);
+  let cursor = marginPx;
+  return tokens.map((t, i) => {
+    const widthPx = tokenUnits[i] * unitPx;
+    const centerX = cursor + widthPx / 2;
+    cursor += widthPx + gapUnits * unitPx;
+    return { ...t, centerX };
+  });
+}
+
+function layoutTokensContinuous(tokens, width, marginPx) {
+  const tokenUnits = tokens.map((t) => Math.max(0.8, measureUnits(t.surface)));
+  const totalUnits = tokenUnits.reduce((s, u) => s + u, 0);
+  const available = Math.max(1, width - marginPx * 2);
+  const unitPx = available / Math.max(1, totalUnits);
+  let cursor = marginPx;
+  return tokens.map((t, i) => {
+    const widthPx = tokenUnits[i] * unitPx;
+    const centerX = cursor + widthPx / 2;
+    cursor += widthPx;
+    return { ...t, centerX, widthPx };
+  });
+}
+
+function layoutTokensCentered(tokens, width, maxWidthPx, fontSizePx) {
+  const tokenWidths = tokens.map((t) =>
+    Math.max(fontSizePx * 0.8, measureUnits(t.surface) * fontSizePx),
+  );
+  const totalBaseWidthPx = tokenWidths.reduce((s, w) => s + w, 0);
+  const scale = Math.min(1, maxWidthPx / Math.max(1, totalBaseWidthPx));
+  const totalWidthPx = totalBaseWidthPx * scale;
+  let cursor = (width - totalWidthPx) / 2;
+  return tokens.map((t, i) => {
+    const widthPx = tokenWidths[i] * scale;
+    const centerX = cursor + widthPx / 2;
+    cursor += widthPx;
+    return { ...t, centerX, widthPx };
+  });
+}
+
+function estimateTextWidthPx(text, fontSizePx) {
+  const units = measureUnits(text);
+  return units * fontSizePx * 0.6;
+}
+
+function loadPngDataUri(filePath) {
+  if (!fs.existsSync(filePath)) return "";
+  const b64 = fs.readFileSync(filePath).toString("base64");
+  if (!b64) return "";
+  return `data:image/png;base64,${b64}`;
+}
+
+async function buildQrDataUri(url, sizePx) {
+  if (!QRCode) QRCode = require("qrcode");
+  return QRCode.toDataURL(url, {
+    errorCorrectionLevel: "M",
+    margin: 1,
+    width: Math.round(sizePx),
+    color: { dark: "#000000", light: "#FFFFFFFF" },
+  });
+}
+
+function buildOverlaySvg({
+  width,
+  height,
+  headerLines,
+  enLine,
+  jpTokens,
+  furiganaTokens,
+  romajiLine,
+  logoDataUri,
+  qrDataUri,
+}) {
+  const scale = height / 1080;
+  const fontJP = "Hiragino Sans, Noto Sans CJK JP, Arial";
+  const fontEN = "Helvetica Neue, Arial, sans-serif";
+  const headerY = 110 * scale;
+  const headerGap = 60 * scale;
+
+  const enY = height - 280 * scale;
+  const furiY = height - 230 * scale;
+  const jpY = height - 170 * scale;
+  const romajiY = height - 115 * scale;
+
+  const headerSizeSmall = 30 * scale;
+  const headerSizeBig = 64 * scale;
+  const headerSizeMed = 36 * scale;
+
+  const enSize = 34 * scale;
+  const furiSize = 28 * scale;
+  const jpSize = 46 * scale;
+  const romajiSize = 28 * scale;
+  const logoSize = 170 * scale;
+  const brandPad = 20 * scale;
+  const blockW = 440 * scale;
+  const blockX = width - blockW - 20 * scale;
+  const blockY = 18 * scale;
+  const blockH = 280 * scale;
+  const logoX = blockX + brandPad;
+  const logoY = blockY + brandPad;
+  const appNameX = logoX + logoSize + 16 * scale;
+  const appNameY = logoY + 58 * scale;
+  const subtitleY1 = appNameY + 44 * scale;
+  const subtitleY2 = subtitleY1 + 30 * scale;
+  const appToQrY = subtitleY2 + 34 * scale;
+  const qrSize = 92 * scale;
+  const qrX = blockX + blockW - brandPad - qrSize;
+  const qrY = blockY + blockH - brandPad - qrSize;
+
+  const headerSizes = headerLines.map((line, i) => ({
+    line,
+    size:
+      line.size ??
+      (i === 0 ? headerSizeSmall : i === 1 ? headerSizeBig : headerSizeMed),
+    y: headerY + i * headerGap,
+  }));
+  const headerMaxWidth = headerSizes.reduce((max, h) => {
+    const w = estimateTextWidthPx(h.line.text, h.size);
+    return Math.max(max, w);
+  }, 0);
+  const headerPadX = 22 * scale;
+  const headerPadY = 14 * scale;
+  const headerTop = headerSizes[0]?.y ? headerSizes[0].y - headerSizes[0].size : 0;
+  const headerBottom = headerSizes.at(-1)?.y ?? 0;
+  const headerRect = headerSizes.length
+    ? `<rect x="${width / 2 - (headerMaxWidth + headerPadX * 2) / 2}" y="${headerTop - headerPadY}" width="${headerMaxWidth + headerPadX * 2}" height="${(headerBottom - headerTop) + headerPadY * 2 + headerSizes.at(-1).size * 0.2}" rx="${12 * scale}" ry="${12 * scale}" fill="rgba(20,120,150,0.65)"/>`
+    : "";
+
+  const headerText = headerLines
+    .map((line, i) => {
+      const size =
+        line.size ??
+        (i === 0 ? headerSizeSmall : i === 1 ? headerSizeBig : headerSizeMed);
+      const y = headerY + i * headerGap;
+      const color = line.color ?? "#ffffff";
+      const text = svgEscape(line.text);
+      return `<text x="50%" y="${y}" text-anchor="middle" font-family="${fontJP}" font-size="${size}" font-weight="700" fill="${color}" stroke="#000000" stroke-width="2" paint-order="stroke fill">${text}</text>`;
+    })
+    .join("\n");
+
+  const enText = enLine
+    ? `<text x="50%" y="${enY}" text-anchor="middle" font-family="${fontEN}" font-size="${enSize}" font-weight="700" fill="#ffffff" stroke="#000000" stroke-width="2" paint-order="stroke fill">${enLine}</text>`
+    : "";
+
+  const marginPx = width * 0.08;
+  const maxTextWidthPx = width - marginPx * 2;
+  const jpLayout = layoutTokensCentered(jpTokens, width, maxTextWidthPx, jpSize);
+
+  const jpText = jpLayout
+    .map((t) => {
+      return `<text x="${t.centerX}" y="${jpY}" text-anchor="middle" font-family="${fontJP}" font-size="${jpSize}" font-weight="700" fill="${t.color ?? "#ffffff"}" stroke="#000000" stroke-width="3" paint-order="stroke fill">${svgEscape(t.surface)}</text>`;
+    })
+    .join("\n");
+  const furiText = furiganaTokens
+    .map((t, i) => {
+      if (!t.text) return "";
+      const x = jpLayout[i]?.centerX;
+      if (!x) return "";
+      return `<text x="${x}" y="${furiY}" text-anchor="middle" font-family="${fontJP}" font-size="${furiSize}" font-weight="700" fill="${t.color ?? "#ffffff"}" stroke="#000000" stroke-width="2" paint-order="stroke fill">${svgEscape(t.text)}</text>`;
+    })
+    .filter(Boolean)
+    .join("\n");
+  const romajiText = `<text x="50%" y="${romajiY}" text-anchor="middle" font-family="${fontEN}" font-size="${romajiSize}" font-weight="700" fill="#ffffff" stroke="#000000" stroke-width="2" paint-order="stroke fill">${romajiLine}</text>`;
+  const logoImage = logoDataUri
+    ? `<image x="${logoX}" y="${logoY}" width="${logoSize}" height="${logoSize}" href="${logoDataUri}" preserveAspectRatio="xMidYMid meet"/>`
+    : "";
+  const cornerQr = qrDataUri
+    ? `<image x="${qrX}" y="${qrY}" width="${qrSize}" height="${qrSize}" href="${qrDataUri}" preserveAspectRatio="xMidYMid meet"/>`
+    : "";
+  const brandBlock = `
+  <rect x="${blockX}" y="${blockY}" width="${blockW}" height="${blockH}" rx="${14 * scale}" ry="${14 * scale}" fill="rgba(0,0,0,0.45)"/>
+  <text x="${appNameX}" y="${appNameY}" text-anchor="start" font-family="${fontEN}" font-size="${52 * scale}" font-weight="800" fill="#ffffff" stroke="#000000" stroke-width="${1.6 * scale}" paint-order="stroke fill">Bundai</text>
+  <text x="${appNameX}" y="${subtitleY1}" text-anchor="start" font-family="${fontEN}" font-size="${20 * scale}" font-weight="700" fill="#ffffff">Learn Japanese</text>
+  <text x="${appNameX}" y="${subtitleY2}" text-anchor="start" font-family="${fontEN}" font-size="${20 * scale}" font-weight="700" fill="#ffffff">watching anime</text>
+  <text x="${appNameX}" y="${appToQrY}" text-anchor="start" font-family="${fontEN}" font-size="${24 * scale}" font-weight="800" fill="#ffd900">App -&gt;</text>
+  ${cornerQr}
+  `;
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+  <rect width="100%" height="100%" fill="transparent"/>
+  ${brandBlock}
+  ${logoImage}
+  ${headerRect}
+  ${headerText}
+  ${enText}
+  ${furiText}
+  ${jpText}
+  ${romajiText}
+</svg>`;
+}
+
+function buildEndCardSvg({
+  width,
+  height,
+  logoDataUri,
+  qrDataUri,
+  cardDataUri,
+}) {
+  if (cardDataUri) {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+  <rect width="100%" height="100%" fill="#000000"/>
+  <image x="0" y="0" width="${width}" height="${height}" href="${cardDataUri}" preserveAspectRatio="xMidYMid slice"/>
+</svg>`;
+  }
+
+  const scale = height / 1080;
+  const fontEN = "Helvetica Neue, Arial, sans-serif";
+  const logoSize = 270 * scale;
+  const qrSize = 300 * scale;
+  const centerX = width / 2;
+  const topY = 130 * scale;
+  const logoX = centerX - logoSize / 2;
+  const qrX = centerX - qrSize / 2;
+  const qrY = height - qrSize - 150 * scale;
+
+  const logo = logoDataUri
+    ? `<image x="${logoX}" y="${topY}" width="${logoSize}" height="${logoSize}" href="${logoDataUri}" preserveAspectRatio="xMidYMid meet"/>`
+    : "";
+  const qr = qrDataUri
+    ? `<image x="${qrX}" y="${qrY}" width="${qrSize}" height="${qrSize}" href="${qrDataUri}" preserveAspectRatio="xMidYMid meet"/>`
+    : "";
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#071321"/>
+      <stop offset="100%" stop-color="#0f2b44"/>
+    </linearGradient>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#bg)"/>
+  <circle cx="${width * 0.82}" cy="${height * 0.18}" r="${220 * scale}" fill="rgba(255,217,0,0.16)"/>
+  <circle cx="${width * 0.15}" cy="${height * 0.85}" r="${260 * scale}" fill="rgba(74,209,255,0.14)"/>
+  ${logo}
+  <text x="50%" y="${topY + logoSize + 80 * scale}" text-anchor="middle" font-family="${fontEN}" font-size="${86 * scale}" font-weight="800" fill="#ffffff">Bundai</text>
+  <text x="50%" y="${topY + logoSize + 145 * scale}" text-anchor="middle" font-family="${fontEN}" font-size="${38 * scale}" font-weight="700" fill="#ffffff">Learn Japanese</text>
+  <text x="50%" y="${topY + logoSize + 195 * scale}" text-anchor="middle" font-family="${fontEN}" font-size="${38 * scale}" font-weight="700" fill="#ffffff">watching anime</text>
+  <text x="${qrX - 40 * scale}" y="${qrY + qrSize / 2}" text-anchor="end" font-family="${fontEN}" font-size="${40 * scale}" font-weight="800" fill="#ffd900">App -&gt;</text>
+  <text x="50%" y="${qrY - 42 * scale}" text-anchor="middle" font-family="${fontEN}" font-size="${40 * scale}" font-weight="800" fill="#ffd900">download the browser extension &amp; app</text>
+  ${qr}
+  <text x="50%" y="${height - 64 * scale}" text-anchor="middle" font-family="${fontEN}" font-size="${30 * scale}" font-weight="700" fill="#ffffff">bundai.app</text>
+</svg>`;
+}
+
+function runFfmpegStillClip({ image, durationSec, output, verbose }) {
+  const args = [
+    "-y",
+    "-loop",
+    "1",
+    "-i",
+    image,
+    "-f",
+    "lavfi",
+    "-i",
+    "anullsrc=channel_layout=stereo:sample_rate=48000",
+    "-shortest",
+    "-t",
+    String(durationSec),
+    "-c:v",
+    "libx264",
+    "-pix_fmt",
+    "yuv420p",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "18",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "192k",
+    "-ar",
+    "48000",
+    "-movflags",
+    "+faststart",
+    output,
+  ];
+  if (verbose) console.log(["ffmpeg", ...args].join(" "));
+  const res = spawnSync("ffmpeg", args, { stdio: "inherit" });
+  if (res.status !== 0) {
+    throw new Error(`ffmpeg still clip failed for ${output}`);
+  }
+}
+
 function isSentenceTerminal(text) {
   const t = text.trim();
   // Common Japanese sentence enders + ASCII fallbacks
@@ -652,6 +1282,8 @@ function runFfmpegExtract({ input, startMs, endMs, output, verbose }) {
     duration,
     "-c:v",
     "libx264",
+    "-pix_fmt",
+    "yuv420p",
     "-preset",
     "veryfast",
     "-crf",
@@ -695,6 +1327,8 @@ function runFfmpegConcat({ inputs, output, verbose, listName }) {
     listFile,
     "-c:v",
     "libx264",
+    "-pix_fmt",
+    "yuv420p",
     "-preset",
     "veryfast",
     "-crf",
@@ -767,7 +1401,7 @@ function applyMaxDuration({
   return { startMs: newStart, endMs: newEnd, skipped: false };
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv);
 
   if (!args.query) {
@@ -993,6 +1627,99 @@ function main() {
     });
   }
 
+  if (args.decorate) {
+    const dicPath = path.join("node_modules", "kuromoji", "dict");
+    const tokenizer = await buildTokenizer(dicPath);
+    const logoDataUri = loadPngDataUri(path.resolve("source_content", "logo.png"));
+    const qrDataUri = await buildQrDataUri("http://bundai.app/", 220);
+
+    let meaning = args.meaning ?? "";
+    if (args.wordList && !meaning) {
+      const list = JSON.parse(fs.readFileSync(args.wordList, "utf8"));
+      const found = list.find((x) => x.word === args.query);
+      if (found?.meaning) meaning = found.meaning;
+    }
+    const meaningShort = normalizeMeaning(meaning);
+
+    const queryReadingParts = tokenizeReading(tokenizer, args.query);
+    const queryReading = toHiragana(queryReadingParts.join(""));
+    const queryRomaji = toRomaji(queryReading);
+    const highlightHex = "#ffd900";
+    const headerKanjiColor = "#ffd900";
+
+    for (const c of manifest) {
+      const jpText = c.sentenceText;
+      const enText = c.enText ?? "";
+
+      const tokens = tokenizer.tokenize(jpText);
+      const jpTokens = tokens.map((t) => {
+        const surface = t.surface_form || "";
+        const highlight = surface.includes(args.query);
+        return {
+          surface,
+          color: highlight ? highlightHex : "#ffffff",
+        };
+      });
+      const furiTokens = tokens.map((t) => {
+        const surface = t.surface_form || "";
+        const reading = toHiragana(t.reading || surface || "");
+        const hasKanji = Array.from(surface).some(isKanjiChar);
+        const highlight = hasKanji && reading.includes(queryReading);
+        return {
+          surface,
+          text: hasKanji ? reading : "",
+          color: highlight ? highlightHex : "#ffffff",
+        };
+      });
+      const romajiTokens = tokens.map((t) =>
+        toRomaji(toHiragana(t.reading || t.surface_form || "")),
+      );
+      const romajiText = joinRomajiTokens(tokens, romajiTokens);
+      const romajiLine = svgHighlighted(
+        romajiText,
+        queryRomaji,
+        highlightHex,
+      );
+      const enHighlighted = meaningShort
+        ? svgHighlightedCaseInsensitive(enText, meaningShort, highlightHex)
+        : svgEscape(enText);
+
+      const headerLines = [
+        { text: queryReading },
+        { text: args.query, color: headerKanjiColor, bg: true },
+        meaningShort ? { text: meaningShort } : null,
+      ].filter(Boolean);
+
+      const { width, height } = getVideoDimensions(c.output);
+      const svg = buildOverlaySvg({
+        width,
+        height,
+        headerLines,
+        enLine: enText ? enHighlighted : "",
+        jpTokens,
+        furiganaTokens: furiTokens,
+        romajiLine,
+        logoDataUri,
+        qrDataUri,
+      });
+
+      const overlayHash = crypto.createHash("sha1").update(c.output).digest("hex").slice(0, 10);
+      const overlayPath = path.join(outputDir, `.tmp_overlay_${overlayHash}.png`);
+      renderSvgToPng({ svg, output: overlayPath });
+
+      const tmpOut = c.output.replace(/\.mp4$/i, "_decorated.mp4");
+      runFfmpegOverlay({
+        input: c.output,
+        overlay: overlayPath,
+        output: tmpOut,
+        verbose: args.verbose,
+      });
+      fs.unlinkSync(overlayPath);
+      fs.unlinkSync(c.output);
+      fs.renameSync(tmpOut, c.output);
+    }
+  }
+
   if (args.concat) {
     const stitched =
       args.concatOut ??
@@ -1007,6 +1734,72 @@ function main() {
     });
     console.log("");
     console.log(`Stitched video: ${stitched}`);
+
+    const cardVideoPath = path.resolve("source_content", "card.mp4");
+    const hasCardVideo = fs.existsSync(cardVideoPath);
+    if (hasCardVideo) {
+      const { width, height } = getVideoDimensions(stitched);
+      const tailDurationSec = getMediaDurationSec(cardVideoPath);
+      if (tailDurationSec > 0) {
+        const finalOut = stitched.replace(/\.mp4$/i, "_with_card.mp4");
+        runFfmpegAppendTailVideo({
+          mainInput: stitched,
+          tailInput: cardVideoPath,
+          output: finalOut,
+          width,
+          height,
+          tailDurationSec,
+          verbose: args.verbose,
+        });
+        fs.unlinkSync(stitched);
+        fs.renameSync(finalOut, stitched);
+        console.log(`Appended video end card (source_content/card.mp4) to: ${stitched}`);
+      } else {
+        console.warn(`Skipped source_content/card.mp4 because duration could not be read.`);
+      }
+    } else {
+      const cardPath = path.resolve("source_content", "card.png");
+      const hasCardImage = fs.existsSync(cardPath);
+      if (args.decorate || hasCardImage) {
+        const { width, height } = getVideoDimensions(stitched);
+        const logoDataUri = loadPngDataUri(path.resolve("source_content", "logo.png"));
+        const cardDataUri = hasCardImage ? loadPngDataUri(cardPath) : "";
+        const qrDataUri = cardDataUri ? "" : await buildQrDataUri("http://bundai.app/", 540);
+        const endSvg = buildEndCardSvg({
+          width,
+          height,
+          logoDataUri,
+          qrDataUri,
+          cardDataUri,
+        });
+        const endHash = crypto.createHash("sha1").update(stitched).digest("hex").slice(0, 10);
+        const endPng = path.join(path.dirname(stitched), `.tmp_endcard_${endHash}.png`);
+        const endMp4 = path.join(path.dirname(stitched), `.tmp_endcard_${endHash}.mp4`);
+        const finalOut = stitched.replace(/\.mp4$/i, "_with_endcard.mp4");
+        renderSvgToPng({ svg: endSvg, output: endPng });
+        runFfmpegStillClip({
+          image: endPng,
+          durationSec: 3,
+          output: endMp4,
+          verbose: args.verbose,
+        });
+        runFfmpegConcat({
+          inputs: [stitched, endMp4],
+          output: finalOut,
+          verbose: args.verbose,
+          listName: `.concat-endcard-${querySlug}.txt`,
+        });
+        fs.unlinkSync(endPng);
+        fs.unlinkSync(endMp4);
+        fs.unlinkSync(stitched);
+        fs.renameSync(finalOut, stitched);
+        if (cardDataUri) {
+          console.log(`Appended image end card (source_content/card.png) to: ${stitched}`);
+        } else {
+          console.log(`Appended branded end card to: ${stitched}`);
+        }
+      }
+    }
 
     if (args.concatOnly) {
       for (const m of manifest) {
@@ -1023,4 +1816,7 @@ function main() {
   console.log(`Done. Wrote ${manifest.length} clip(s) into: ${outputDir}`);
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
