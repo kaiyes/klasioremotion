@@ -5,6 +5,10 @@ dist
 
 # Ignore the output video from Git but not videos you import into src/.
 out
+out/**/*.mp4
+out/**/*.mov
+out/**/*.webm
+out/**/*.mkv
 clips
 source_content/*
 !source_content/logo.png

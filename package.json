@@ -27,7 +27,9 @@
     "upgrade": "remotion upgrade",
     "lint": "eslint src && tsc",
     "extract-clips": "node scripts/extract-clips.js",
-    "batch-extract": "node scripts/batch-extract.js"
+    "batch-extract": "node scripts/batch-extract.js",
+    "vertical-shorts": "node scripts/make-vertical-shorts.js",
+    "vertical-shorts-clean": "node scripts/make-vertical-shorts-clean.js"
   },
   "sideEffects": [
     "*.css"
