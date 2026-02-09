@@ -20,6 +20,28 @@ let kuromoji;
 let wanakana;
 let resvg;
 let QRCode;
+const DEFAULT_VIDEOS_DIR = path.join("source_content", "shingeki_no_kyojin", "videos");
+const DEFAULT_EN_SUBS_DIR_EMBEDDED = path.join(
+  "source_content",
+  "shingeki_no_kyojin",
+  "subs",
+  "english_embedded",
+);
+const DEFAULT_EN_SUBS_DIR_LEGACY = path.join(
+  "source_content",
+  "shingeki_no_kyojin",
+  "subs",
+  "english",
+);
+const DEFAULT_EN_SUBS_DIR = fs.existsSync(DEFAULT_EN_SUBS_DIR_EMBEDDED)
+  ? DEFAULT_EN_SUBS_DIR_EMBEDDED
+  : DEFAULT_EN_SUBS_DIR_LEGACY;
+const DEFAULT_SUB_OFFSETS_FILE = path.join(
+  "source_content",
+  "shingeki_no_kyojin",
+  "subs",
+  "sub-offsets.json",
+);
 
 const DEFAULT_VIDEO_EXTS = [".mkv", ".mp4", ".webm", ".mov"];
 
@@ -49,9 +71,16 @@ function parseArgs(argv) {
     concatOnly: false,
     writeManifest: false,
     subOffsetMs: 0,
-    enSubsDir: null,
+    subOffsetsFile: fs.existsSync(DEFAULT_SUB_OFFSETS_FILE) ? DEFAULT_SUB_OFFSETS_FILE : null,
+    enSubsDir: fs.existsSync(DEFAULT_EN_SUBS_DIR) ? DEFAULT_EN_SUBS_DIR : null,
     rank: false,
+    shuffle: false,
+    shuffleSeed: null,
+    shuffleTop: 0,
+    candidatesOut: null,
     printTop: 0,
+    pick: null,
+    replace: [],
     decorate: false,
     wordList: null,
     meaning: null,
@@ -163,6 +192,13 @@ function parseArgs(argv) {
         args.subOffsetMs = Number(value);
         takeNext();
         break;
+      case "subOffsetsFile":
+        args.subOffsetsFile = value;
+        takeNext();
+        break;
+      case "noSubOffsetsFile":
+        args.subOffsetsFile = null;
+        break;
       case "enSubsDir":
         args.enSubsDir = value;
         takeNext();
@@ -170,8 +206,31 @@ function parseArgs(argv) {
       case "rank":
         args.rank = true;
         break;
+      case "shuffle":
+        args.shuffle = true;
+        break;
+      case "shuffleSeed":
+        args.shuffleSeed = Number(value);
+        takeNext();
+        break;
+      case "shuffleTop":
+        args.shuffleTop = Number(value);
+        takeNext();
+        break;
+      case "candidatesOut":
+        args.candidatesOut = value;
+        takeNext();
+        break;
       case "printTop":
         args.printTop = Number(value);
+        takeNext();
+        break;
+      case "pick":
+        args.pick = String(value);
+        takeNext();
+        break;
+      case "replace":
+        args.replace.push(String(value));
         takeNext();
         break;
       case "decorate":
@@ -230,7 +289,7 @@ Options:
   --subFile             Subtitle file (.srt or .ass)
   --subsDir             Directory to scan for subtitle files
   --video               Video file to use (single-video mode)
-  --videosDir           Directory where videos live (auto-match by basename)
+  --videosDir           Directory where videos live (recursive scan, auto-match by basename)
   --videoExts           Comma-separated list of video extensions to try (default: ${DEFAULT_VIDEO_EXTS.join(",")})
   --mode                "line" (default) uses the single subtitle line that contains the query. "sentence" merges nearby lines.
   --limit               Number of clips to extract (default: 5)
@@ -246,9 +305,17 @@ Options:
   --concatOnly          After stitching, delete the individual clip files
   --manifest            Write a manifest JSON (default: off)
   --subOffsetMs         Shift all subtitle timestamps by this amount (ms). Use negative to shift earlier. (default: 0)
-  --enSubsDir           English subtitle directory (for scoring)
+  --subOffsetsFile      JSON map of per-episode/per-season offsets (default: ${DEFAULT_SUB_OFFSETS_FILE} if present)
+  --noSubOffsetsFile    Disable reading offsets file
+  --enSubsDir           English subtitle directory (default: ${DEFAULT_EN_SUBS_DIR} if present)
   --rank                Rank candidates and pick the best scores instead of first matches
+  --shuffle             Shuffle candidate selection order (after ranking/dedup)
+  --shuffleSeed         Deterministic seed for --shuffle
+  --shuffleTop          Only shuffle the first N candidates (0 = all)
+  --candidatesOut       Write candidates JSON (planned/pool/selected) to this file
   --printTop            Print the top N ranked candidates with scores (default: 0)
+  --pick                Comma list of ranked candidate indices to use (1-based), e.g. "1,2,7,10"
+  --replace             Replace selected slot with ranked candidate index, e.g. "3=11" or "last=14" (repeatable)
   --decorate            Burn JP+EN subs with furigana/romaji and highlight the query
   --wordList            JSON list with fields {word, reading, romaji, meaning} for header/meaning lookup
   --meaning             Override meaning text in header and EN highlight
@@ -291,6 +358,37 @@ function timeAssToMs(ts) {
   return base + Number(frac);
 }
 
+function looksLikeAssVectorDrawing(text) {
+  const s = String(text || "").trim().toLowerCase();
+  if (!s) return false;
+  // ASS drawing commands are numeric paths like: "m 60 0 b 45 21 ..."
+  return /^[mnlbspc0-9.\-\s]+$/.test(s);
+}
+
+function cleanSubtitleText(t) {
+  const normalized = String(t ?? "")
+    .replace(/\\N/g, "\n")
+    .replace(/\{[^}]*\}/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/<[^>\n]*>/g, "")
+    // Guard against malformed tag debris such as: face="..." size="78">
+    .replace(/(?:^|\s)(?:[a-z][a-z0-9_-]*\s*=\s*"[^"]*"\s*)+>/gi, " ")
+    .replace(/[<>]/g, " ");
+
+  const lines = normalized
+    .split(/\r?\n/g)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .filter((x) => !looksLikeAssVectorDrawing(x));
+
+  return lines.join(" ").trim();
+}
+
 function parseSrtFile(filePath) {
   const raw = stripBom(fs.readFileSync(filePath, "utf8"));
   const blocks = raw
@@ -312,7 +410,7 @@ function parseSrtFile(filePath) {
     const startMs = timeSrtToMs(m[1]);
     const endMs = timeSrtToMs(m[2]);
     const textLines = lines.slice(timeLineIdx + 1);
-    const text = textLines.join("\n").trim();
+    const text = cleanSubtitleText(textLines.join("\n"));
     if (!text) continue;
     items.push({ startMs, endMs, text });
   }
@@ -320,8 +418,7 @@ function parseSrtFile(filePath) {
 }
 
 function cleanAssText(t) {
-  // Basic cleanup: \N line breaks, strip {...} override tags.
-  return t.replace(/\\N/g, "\n").replace(/\{[^}]*\}/g, "").trim();
+  return cleanSubtitleText(t);
 }
 
 function parseAssFile(filePath) {
@@ -360,6 +457,185 @@ function applyOffset(items, offsetMs) {
   }));
 }
 
+function normalizeEpisodeToken(key) {
+  if (!key) return null;
+  const m = String(key).match(/s\s*0*(\d{1,2})\s*e(?:p)?\s*0*(\d{1,3})/i);
+  if (!m) return null;
+  return `s${Number(m[1])}e${Number(m[2])}`;
+}
+
+function normalizeSeasonToken(key) {
+  if (!key) return null;
+  const m = String(key).match(/s\s*0*(\d{1,2})/i);
+  if (!m) return null;
+  return `s${Number(m[1])}`;
+}
+
+function normalizeSubOffsets(raw) {
+  const out = {
+    defaultMs: 0,
+    jpDefaultMs: null,
+    enDefaultMs: null,
+    byEpisode: new Map(),
+    bySeason: new Map(),
+    jpByEpisode: new Map(),
+    jpBySeason: new Map(),
+    enByEpisode: new Map(),
+    enBySeason: new Map(),
+  };
+  if (!raw || typeof raw !== "object") return out;
+
+  const pushEpisode = (bucket, k, v) => {
+    const key = normalizeEpisodeToken(k);
+    if (!key) return;
+    const n = Number(v);
+    if (!Number.isFinite(n)) return;
+    bucket.set(key, n);
+  };
+  const pushSeason = (bucket, k, v) => {
+    const key = normalizeSeasonToken(k);
+    if (!key) return;
+    const n = Number(v);
+    if (!Number.isFinite(n)) return;
+    bucket.set(key, n);
+  };
+
+  if (Number.isFinite(Number(raw.default))) out.defaultMs = Number(raw.default);
+  if (Number.isFinite(Number(raw.defaultMs))) out.defaultMs = Number(raw.defaultMs);
+  if (Number.isFinite(Number(raw.jpDefaultMs))) out.jpDefaultMs = Number(raw.jpDefaultMs);
+  if (Number.isFinite(Number(raw.enDefaultMs))) out.enDefaultMs = Number(raw.enDefaultMs);
+
+  const episodeBuckets = [
+    [out.byEpisode, raw.byEpisode],
+    [out.byEpisode, raw.episodes],
+    [out.jpByEpisode, raw.jpByEpisode],
+    [out.jpByEpisode, raw.jpEpisodes],
+    [out.enByEpisode, raw.enByEpisode],
+    [out.enByEpisode, raw.enEpisodes],
+  ];
+  for (const bucket of episodeBuckets) {
+    const [dest, src] = bucket;
+    if (!src || typeof src !== "object") continue;
+    for (const [k, v] of Object.entries(src)) pushEpisode(dest, k, v);
+  }
+
+  const seasonBuckets = [
+    [out.bySeason, raw.bySeason],
+    [out.bySeason, raw.seasons],
+    [out.jpBySeason, raw.jpBySeason],
+    [out.jpBySeason, raw.jpSeasons],
+    [out.enBySeason, raw.enBySeason],
+    [out.enBySeason, raw.enSeasons],
+  ];
+  for (const bucket of seasonBuckets) {
+    const [dest, src] = bucket;
+    if (!src || typeof src !== "object") continue;
+    for (const [k, v] of Object.entries(src)) pushSeason(dest, k, v);
+  }
+
+  // Also support flat maps: { "s4e30": 120, "s4": 80 }.
+  for (const [k, v] of Object.entries(raw)) {
+    if (
+      [
+        "default",
+        "defaultMs",
+        "jpDefaultMs",
+        "enDefaultMs",
+        "byEpisode",
+        "episodes",
+        "jpByEpisode",
+        "jpEpisodes",
+        "enByEpisode",
+        "enEpisodes",
+        "bySeason",
+        "seasons",
+        "jpBySeason",
+        "jpSeasons",
+        "enBySeason",
+        "enSeasons",
+        "updatedAt",
+      ].includes(k)
+    ) {
+      continue;
+    }
+    if (normalizeEpisodeToken(k)) pushEpisode(out.byEpisode, k, v);
+    else if (normalizeSeasonToken(k)) pushSeason(out.bySeason, k, v);
+  }
+
+  return out;
+}
+
+function loadSubOffsets(filePath, verbose) {
+  if (!filePath) return null;
+  if (!fs.existsSync(filePath)) {
+    if (verbose) console.log(`Sub offsets file not found, ignoring: ${filePath}`);
+    return null;
+  }
+  const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  return normalizeSubOffsets(raw);
+}
+
+function getTrackOffsetFromMaps({
+  subOffsets,
+  episodeToken,
+  seasonToken,
+  track,
+}) {
+  const trackEpisodeMap = track === "en" ? subOffsets.enByEpisode : subOffsets.jpByEpisode;
+  const trackSeasonMap = track === "en" ? subOffsets.enBySeason : subOffsets.jpBySeason;
+  const trackDefault = track === "en" ? subOffsets.enDefaultMs : subOffsets.jpDefaultMs;
+
+  if (trackEpisodeMap.has(episodeToken)) return trackEpisodeMap.get(episodeToken);
+  if (subOffsets.byEpisode.has(episodeToken)) return subOffsets.byEpisode.get(episodeToken);
+  if (trackSeasonMap.has(seasonToken)) return trackSeasonMap.get(seasonToken);
+  if (subOffsets.bySeason.has(seasonToken)) return subOffsets.bySeason.get(seasonToken);
+  if (Number.isFinite(trackDefault)) return trackDefault;
+  return subOffsets.defaultMs || 0;
+}
+
+function getSubOffsetForFile(subFile, subOffsets, track = "jp") {
+  if (!subOffsets) return 0;
+  const info = extractEpisodeKeyFromName(subFile);
+  if (!info || !Number.isFinite(info.season) || !Number.isFinite(info.episode)) {
+    const trackDefault = track === "en" ? subOffsets.enDefaultMs : subOffsets.jpDefaultMs;
+    if (Number.isFinite(trackDefault)) return trackDefault;
+    return subOffsets.defaultMs || 0;
+  }
+  const episodeToken = `s${info.season}e${info.episode}`;
+  const seasonToken = `s${info.season}`;
+  return getTrackOffsetFromMaps({
+    subOffsets,
+    episodeToken,
+    seasonToken,
+    track,
+  });
+}
+
+function buildSeasonOffsets(subFiles) {
+  const seasonMax = new Map();
+  for (const file of subFiles) {
+    const info = extractEpisodeKeyFromName(file);
+    if (!info || !Number.isFinite(info.season) || !Number.isFinite(info.episode)) continue;
+    const prev = seasonMax.get(info.season) || 0;
+    if (info.episode > prev) seasonMax.set(info.season, info.episode);
+  }
+  const seasons = [...seasonMax.keys()].sort((a, b) => a - b);
+  const offsets = new Map();
+  let acc = 0;
+  for (const s of seasons) {
+    offsets.set(s, acc);
+    acc += seasonMax.get(s) || 0;
+  }
+  return offsets;
+}
+
+function getGlobalEpisodeNumber(info, seasonOffsets) {
+  if (!info || !seasonOffsets) return null;
+  if (!Number.isFinite(info.season) || !Number.isFinite(info.episode)) return null;
+  if (!seasonOffsets.has(info.season)) return null;
+  return seasonOffsets.get(info.season) + info.episode;
+}
+
 function buildSubtitleIndex(subsDir) {
   if (!subsDir) return new Map();
   const index = new Map();
@@ -376,22 +652,35 @@ function buildSubtitleIndex(subsDir) {
   return index;
 }
 
-function getEnglishItemsForSubFile(subFile, enIndex, enCache) {
+function getEnglishItemsForSubFile(subFile, enIndex, enCache, seasonOffsets, enOffsetMs) {
   if (!enIndex || enIndex.size === 0) return null;
   const info = extractEpisodeKeyFromName(subFile);
   if (!info) return null;
 
   let enFile = null;
+  // Prefer exact SxxEyy match if present.
   if (enIndex.has(info.key)) enFile = enIndex.get(info.key);
+
+  // If EN files are globally numbered E01..E89, map JP sXeY to cumulative episode number.
+  if (!enFile) {
+    const globalEpisode = getGlobalEpisodeNumber(info, seasonOffsets);
+    if (Number.isFinite(globalEpisode)) {
+      const globalKey = `E${String(globalEpisode).padStart(2, "0")}`;
+      if (enIndex.has(globalKey)) enFile = enIndex.get(globalKey);
+    }
+  }
+
+  // Last fallback: local episode number only (useful for single-season sets).
   if (!enFile && info.episode != null) {
-    const epKey = `E${String(info.episode).padStart(2, "0")}`;
-    if (enIndex.has(epKey)) enFile = enIndex.get(epKey);
+    const localKey = `E${String(info.episode).padStart(2, "0")}`;
+    if (enIndex.has(localKey)) enFile = enIndex.get(localKey);
   }
   if (!enFile) return null;
 
-  if (enCache.has(enFile)) return enCache.get(enFile);
-  const items = parseSrtFile(enFile);
-  enCache.set(enFile, items);
+  const cacheKey = `${enFile}::${Number(enOffsetMs || 0)}`;
+  if (enCache.has(cacheKey)) return enCache.get(cacheKey);
+  const items = applyOffset(parseSubsFile(enFile), enOffsetMs);
+  enCache.set(cacheKey, items);
   return items;
 }
 
@@ -401,6 +690,144 @@ function normalizeTextForScoring(t) {
     .replace(/^[\s　]*[（(][^）)]*[）)]\s*/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeSentenceKey(text) {
+  // Collapse cosmetic differences so repeated subtitle lines are treated as duplicates.
+  return normalizeTextForScoring(text)
+    .replace(/[\s　]+/g, "")
+    .replace(/[。！？!?…〜~ー―—・、,，.]/g, "")
+    .toLowerCase();
+}
+
+function uniqueBySentence(items) {
+  const seen = new Set();
+  const out = [];
+  for (const item of items) {
+    const key = normalizeSentenceKey(item.sentenceText);
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
+function seedFromValue(value) {
+  if (Number.isFinite(Number(value))) {
+    return Number(value) >>> 0;
+  }
+  const str = String(value ?? "");
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function seededRandom(seed) {
+  let t = seed >>> 0;
+  return () => {
+    t += 0x6d2b79f5;
+    let x = Math.imul(t ^ (t >>> 15), 1 | t);
+    x ^= x + Math.imul(x ^ (x >>> 7), 61 | x);
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffleArray(items, seed) {
+  const out = [...items];
+  const rand = seededRandom(seed);
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+function toCandidateRecord(item) {
+  return {
+    subFile: item.subFile,
+    videoFile: item.videoFile ?? null,
+    clipStartMs: item.clipStartMs,
+    clipEndMs: item.clipEndMs,
+    matchStartMs: item.matchStartMs,
+    matchEndMs: item.matchEndMs,
+    sentenceText: item.sentenceText,
+    enText: item.enText,
+    score: item.score,
+  };
+}
+
+function writeJsonFile(filePath, value) {
+  const abs = path.resolve(filePath);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, JSON.stringify(value, null, 2));
+}
+
+function parseIndexToken(raw, label) {
+  const n = Number(String(raw).trim());
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`Invalid ${label} index "${raw}". Use a 1-based positive integer.`);
+  }
+  return n;
+}
+
+function parsePickList(pickSpec) {
+  const tokens = String(pickSpec || "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) {
+    throw new Error(`--pick is empty. Example: --pick "1,2,5,7"`);
+  }
+  return tokens.map((t) => parseIndexToken(t, "pick"));
+}
+
+function applyReplaceRules(selected, pool, replaceSpecs) {
+  if (!replaceSpecs || replaceSpecs.length === 0) return selected;
+  const out = [...selected];
+  for (const spec of replaceSpecs) {
+    const [lhsRaw, rhsRaw] = String(spec).split("=");
+    const lhs = String(lhsRaw || "").trim().toLowerCase();
+    const rhs = String(rhsRaw || "").trim();
+    if (!lhs || !rhs) {
+      throw new Error(`Bad --replace "${spec}". Use "3=11" or "last=14".`);
+    }
+    const srcPos = parseIndexToken(rhs, "replace source");
+    const src = pool[srcPos - 1];
+    if (!src) {
+      throw new Error(`--replace "${spec}" points to missing source #${srcPos}.`);
+    }
+
+    let targetIdx = -1;
+    if (lhs === "last") {
+      if (out.length === 0) throw new Error(`Cannot use --replace "${spec}" with empty selection.`);
+      targetIdx = out.length - 1;
+    } else {
+      const targetPos = parseIndexToken(lhs, "replace target");
+      targetIdx = targetPos - 1;
+      if (targetIdx >= out.length) {
+        throw new Error(
+          `--replace "${spec}" target #${targetPos} is out of range (selected=${out.length}).`,
+        );
+      }
+    }
+    out[targetIdx] = src;
+  }
+
+  const seen = new Set();
+  for (const item of out) {
+    const key = normalizeSentenceKey(item.sentenceText);
+    if (!key) continue;
+    if (seen.has(key)) {
+      throw new Error(
+        `--replace created duplicate sentence "${item.sentenceText}". Choose a different source index.`,
+      );
+    }
+    seen.add(key);
+  }
+  return out;
 }
 
 function scoreCandidate({
@@ -1184,9 +1611,11 @@ function extractEpisodeKeyFromName(name) {
 
   // Common patterns:
   // - "s1e13" / "S01E13"
+  // - "S01ep13"
+  // - "3x13"
   // - "Shingeki no Kyojin S01E13 ..."
   // - "03. Episode Title" (episode only, season implied)
-  const m1 = base.match(/s(\d{1,2})e(\d{1,3})/i);
+  const m1 = base.match(/s(\d{1,2})\s*e?p?(\d{1,3})/i);
   if (m1) {
     return {
       season: Number(m1[1]),
@@ -1195,16 +1624,16 @@ function extractEpisodeKeyFromName(name) {
     };
   }
 
-  const m2 = base.match(/S(\d{2})E(\d{2})/);
+  const m2 = base.match(/(\d{1,2})x(\d{1,3})/i);
   if (m2) {
     return {
       season: Number(m2[1]),
       episode: Number(m2[2]),
-      key: `S${m2[1]}E${m2[2]}`,
+      key: `S${String(Number(m2[1])).padStart(2, "0")}E${String(Number(m2[2])).padStart(2, "0")}`,
     };
   }
 
-  const m3 = base.match(/^\s*(\d{1,3})\s*\./);
+  const m3 = base.match(/^\s*0*(\d{1,3})(?:\s*\.|\b)/);
   if (m3) {
     const ep = Number(m3[1]);
     return { season: null, episode: ep, key: `E${String(ep).padStart(2, "0")}` };
@@ -1215,21 +1644,33 @@ function extractEpisodeKeyFromName(name) {
 
 function buildVideoIndex(videosDir, exts) {
   const index = new Map();
-  const entries = fs.readdirSync(videosDir, { withFileTypes: true });
-  for (const e of entries) {
-    if (!e.isFile()) continue;
-    const ext = path.extname(e.name).toLowerCase();
-    if (!exts.includes(ext)) continue;
-    const info = extractEpisodeKeyFromName(e.name);
-    if (!info) continue;
-    // Prefer first match; deterministic order helps.
-    const p = path.join(videosDir, e.name);
-    if (info.key.startsWith("S") && info.key.includes("E")) {
+  const stack = [videosDir];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        stack.push(p);
+        continue;
+      }
+      if (!e.isFile()) continue;
+      const ext = path.extname(e.name).toLowerCase();
+      if (!exts.includes(ext)) continue;
+
+      const base = path.basename(e.name, ext).toLowerCase();
+      if (!index.has(`BASE:${base}`)) index.set(`BASE:${base}`, p);
+
+      const info = extractEpisodeKeyFromName(e.name);
+      if (!info) continue;
+      // Prefer first match; deterministic order helps.
+      if (info.key.startsWith("S") && info.key.includes("E")) {
+        if (!index.has(info.key)) index.set(info.key, p);
+        continue;
+      }
+      // Episode-only keys.
       if (!index.has(info.key)) index.set(info.key, p);
-      continue;
     }
-    // Episode-only keys.
-    if (!index.has(info.key)) index.set(info.key, p);
   }
   return index;
 }
@@ -1238,6 +1679,8 @@ function findVideoForSubs(subFile, videosDir, exts, videoIndex) {
   if (!videosDir) return null;
 
   const base = path.basename(subFile, path.extname(subFile));
+  const byBase = videoIndex?.get(`BASE:${base.toLowerCase()}`);
+  if (byBase) return byBase;
   for (const ext of exts) {
     const candidate = path.join(videosDir, base + ext);
     if (fs.existsSync(candidate)) return candidate;
@@ -1420,6 +1863,10 @@ async function main() {
     console.error("Use either --video or --videosDir (not both)");
     printHelpAndExit(1);
   }
+  if (!args.video && !args.videosDir && fs.existsSync(DEFAULT_VIDEOS_DIR)) {
+    args.videosDir = DEFAULT_VIDEOS_DIR;
+    if (args.verbose) console.log(`Using default --videosDir: ${DEFAULT_VIDEOS_DIR}`);
+  }
   if (args.mode !== "line" && args.mode !== "sentence") {
     console.error('--mode must be "line" or "sentence"');
     printHelpAndExit(1);
@@ -1428,11 +1875,30 @@ async function main() {
     args.concat = true;
   }
 
+  if (!args.enSubsDir && args.subsDir) {
+    // Common layouts: subs/japanese + subs/english_embedded (preferred), or + subs/english.
+    const subsRoot = path.dirname(path.resolve(args.subsDir));
+    const candidates = [path.join(subsRoot, "english_embedded"), path.join(subsRoot, "english")];
+    const siblingEnglish = candidates.find((p) => fs.existsSync(p));
+    if (siblingEnglish) {
+      args.enSubsDir = siblingEnglish;
+      if (args.verbose) console.log(`Using inferred --enSubsDir: ${siblingEnglish}`);
+    }
+  }
+  if (args.enSubsDir && !fs.existsSync(args.enSubsDir)) {
+    if (args.verbose) {
+      console.log(`English subtitle dir not found, disabling EN matching: ${args.enSubsDir}`);
+    }
+    args.enSubsDir = null;
+  }
+
   const subFiles = args.subFile
     ? [args.subFile]
     : listSubtitleFiles(args.subsDir);
+  const seasonOffsets = buildSeasonOffsets(subFiles);
 
   const videoIndex = args.videosDir ? buildVideoIndex(args.videosDir, args.videoExts) : null;
+  const subOffsets = loadSubOffsets(args.subOffsetsFile, args.verbose);
   const enIndex = args.enSubsDir ? buildSubtitleIndex(args.enSubsDir) : null;
   const enCache = new Map();
 
@@ -1440,9 +1906,24 @@ async function main() {
   const dedupe = new Set();
 
   for (const subFile of subFiles) {
-    const items = applyOffset(parseSubsFile(subFile), args.subOffsetMs);
+    const mappedJpOffsetMs = getSubOffsetForFile(subFile, subOffsets, "jp");
+    const effectiveJpOffsetMs = mappedJpOffsetMs + args.subOffsetMs;
+    const mappedEnOffsetMs = getSubOffsetForFile(subFile, subOffsets, "en");
+    const effectiveEnOffsetMs = mappedEnOffsetMs + args.subOffsetMs;
+    if (args.verbose && (effectiveJpOffsetMs !== 0 || effectiveEnOffsetMs !== 0)) {
+      console.log(
+        `Using offsets jp=${effectiveJpOffsetMs}ms en=${effectiveEnOffsetMs}ms for ${path.basename(subFile)}`,
+      );
+    }
+    const items = applyOffset(parseSubsFile(subFile), effectiveJpOffsetMs);
     if (items.length === 0) continue;
-    const enItems = getEnglishItemsForSubFile(subFile, enIndex, enCache);
+    const enItems = getEnglishItemsForSubFile(
+      subFile,
+      enIndex,
+      enCache,
+      seasonOffsets,
+      effectiveEnOffsetMs,
+    );
 
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
@@ -1537,26 +2018,117 @@ async function main() {
     }
   }
 
+  let pool = planned;
+  if (args.rank) {
+    pool = [...planned].sort((a, b) => b.score - a.score);
+  }
+  pool = uniqueBySentence(pool);
+
+  let selectionPool = pool;
+  let shuffleSeedUsed = null;
+  if (args.shuffle) {
+    if (args.pick) {
+      console.log("Ignoring --shuffle because --pick was provided.");
+    } else {
+      const seedBase =
+        Number.isFinite(args.shuffleSeed)
+          ? args.shuffleSeed
+          : `${args.query}:${Date.now()}:${process.pid}`;
+      shuffleSeedUsed = seedFromValue(seedBase);
+      const windowSize =
+        Number.isFinite(args.shuffleTop) && args.shuffleTop > 0
+          ? Math.min(args.shuffleTop, pool.length)
+          : pool.length;
+      const head = shuffleArray(pool.slice(0, windowSize), shuffleSeedUsed);
+      selectionPool = head.concat(pool.slice(windowSize));
+      if (args.verbose) {
+        console.log(
+          `Shuffle active (seed=${shuffleSeedUsed}, window=${windowSize}/${pool.length}).`,
+        );
+      }
+    }
+  }
+
   if (planned.length === 0) {
+    if (args.candidatesOut) {
+      writeJsonFile(args.candidatesOut, {
+        query: args.query,
+        createdAt: new Date().toISOString(),
+        args: {
+          rank: args.rank,
+          shuffle: args.shuffle,
+          shuffleSeed: shuffleSeedUsed,
+          shuffleTop: args.shuffleTop,
+          mode: args.mode,
+          limit: args.limit,
+        },
+        stats: {
+          plannedCount: 0,
+          poolCount: 0,
+          selectedCount: 0,
+        },
+        planned: [],
+        pool: [],
+        selected: [],
+      });
+    }
     console.error(`No matches found for query: ${args.query}`);
     process.exit(2);
   }
 
-  let selected = planned;
-  if (args.rank) {
-    selected = [...planned].sort((a, b) => b.score - a.score);
-  }
-  selected = selected.slice(0, args.limit);
-
-  if (args.printTop > 0 && args.rank) {
+  if (args.printTop > 0) {
     console.log("");
-    console.log(`Top ${Math.min(args.printTop, selected.length)} candidates:`);
-    selected.slice(0, args.printTop).forEach((c, idx) => {
+    const title = args.rank ? "Top" : "Candidates";
+    console.log(`${title} ${Math.min(args.printTop, pool.length)} candidates:`);
+    pool.slice(0, args.printTop).forEach((c, idx) => {
       console.log(
         `${idx + 1}. score=${c.score} ${path.basename(c.subFile)} ${msToFfmpegTime(c.clipStartMs)}-${msToFfmpegTime(c.clipEndMs)}`,
       );
       console.log(`   JP: ${c.sentenceText}`);
       if (c.enText) console.log(`   EN: ${c.enText}`);
+    });
+  }
+
+  let selected = selectionPool.slice(0, args.limit);
+  if (args.pick) {
+    const picks = parsePickList(args.pick);
+    const seenPick = new Set();
+    selected = picks.map((pos) => {
+      const item = pool[pos - 1];
+      if (!item) {
+        throw new Error(`--pick index #${pos} is out of range (candidates=${pool.length}).`);
+      }
+      const key = normalizeSentenceKey(item.sentenceText) || `idx:${pos}`;
+      if (seenPick.has(key)) {
+        throw new Error(`--pick contains duplicate sentence at index #${pos}.`);
+      }
+      seenPick.add(key);
+      return item;
+    });
+  }
+
+  selected = applyReplaceRules(selected, pool, args.replace);
+
+  if (args.candidatesOut) {
+    writeJsonFile(args.candidatesOut, {
+      query: args.query,
+      createdAt: new Date().toISOString(),
+      args: {
+        rank: args.rank,
+        shuffle: args.shuffle,
+        shuffleSeed: shuffleSeedUsed,
+        shuffleTop: args.shuffleTop,
+        mode: args.mode,
+        limit: args.limit,
+      },
+      stats: {
+        plannedCount: planned.length,
+        poolCount: pool.length,
+        selectedCount: selected.length,
+      },
+      planned: planned.map(toCandidateRecord),
+      pool: pool.map(toCandidateRecord),
+      selected: selected.map(toCandidateRecord),
     });
   }
 

@@ -14,18 +14,20 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
+const DEFAULT_VIDEOS_DIR = path.join("source_content", "shingeki_no_kyojin", "videos");
 
 function parseArgs(argv) {
   const args = {
     wordsFile: "source_content/all_anime_top_2000.json",
     count: 10,
     subsDir: null,
-    videosDir: null,
+    videosDir: fs.existsSync(DEFAULT_VIDEOS_DIR) ? DEFAULT_VIDEOS_DIR : null,
     limit: 5,
     outDir: "out/clips",
     concat: true,
     flatOut: true,
     concatOnly: true,
+    continueOnMissing: true,
     extra: [],
   };
 
@@ -86,6 +88,12 @@ function parseArgs(argv) {
       case "no-concatOnly":
         args.concatOnly = false;
         break;
+      case "continueOnMissing":
+        args.continueOnMissing = true;
+        break;
+      case "no-continueOnMissing":
+        args.continueOnMissing = false;
+        break;
       case "extra":
         args.extra.push(value);
         takeNext();
@@ -111,8 +119,14 @@ function parseArgs(argv) {
     printHelpAndExit(1);
   }
 
-  if (!args.subsDir || !args.videosDir) {
-    console.error("--subsDir and --videosDir are required");
+  if (!args.subsDir) {
+    console.error("--subsDir is required");
+    printHelpAndExit(1);
+  }
+  if (!args.videosDir) {
+    console.error(
+      `--videosDir is required (or place videos in default: ${DEFAULT_VIDEOS_DIR})`,
+    );
     printHelpAndExit(1);
   }
 
@@ -132,12 +146,13 @@ Options:
   --wordsFile   JSON file with [{ word, ... }]
   --count       Number of words to process (default: 10)
   --subsDir     Japanese subtitle directory (required)
-  --videosDir   Video directory (required)
+  --videosDir   Video directory (default: ${DEFAULT_VIDEOS_DIR} if present)
   --limit       Clips per word (default: 5)
   --outDir      Output directory for clips (default: out/clips)
   --concat      Stitch clips (default: on)
   --flatOut     Write outputs into --outDir (default: on)
   --concatOnly  Delete per-clip files after stitching (default: on)
+  --continueOnMissing Continue when a word has no matches (default: on)
   --extra       Pass-through extra arg to extract-clips (repeatable)
 
 Any unknown --flags will be forwarded to extract-clips.
@@ -162,6 +177,10 @@ function main() {
     console.error("No words found.");
     process.exit(2);
   }
+
+  let ok = 0;
+  let missing = 0;
+  let failed = 0;
 
   for (const word of words) {
     console.log("");
@@ -189,11 +208,21 @@ function main() {
 
     const res = spawnSync(process.execPath, cliArgs, { stdio: "inherit" });
     if (res.status !== 0) {
+      // extract-clips uses exit code 2 when no matches were found.
+      if (res.status === 2 && args.continueOnMissing) {
+        missing++;
+        console.log(`Skipping (no matches): ${word}`);
+        continue;
+      }
+      failed++;
       console.error(`Failed for word: ${word}`);
       process.exit(res.status ?? 1);
     }
+    ok++;
   }
+
+  console.log("");
+  console.log(`Batch complete. words=${words.length}, ok=${ok}, missing=${missing}, failed=${failed}`);
 }
 
 main();
-

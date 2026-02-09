@@ -7,13 +7,30 @@ const { spawnSync } = require("node:child_process");
 let kuromoji;
 let wanakana;
 let resvg;
+let QRCode;
+const DEFAULT_VIDEOS_DIR = path.join("source_content", "shingeki_no_kyojin", "videos");
+const DEFAULT_EN_SUBS_DIR_EMBEDDED = path.join(
+  "source_content",
+  "shingeki_no_kyojin",
+  "subs",
+  "english_embedded",
+);
+const DEFAULT_EN_SUBS_DIR_LEGACY = path.join(
+  "source_content",
+  "shingeki_no_kyojin",
+  "subs",
+  "english",
+);
+const DEFAULT_EN_SUBS_DIR = fs.existsSync(DEFAULT_EN_SUBS_DIR_EMBEDDED)
+  ? DEFAULT_EN_SUBS_DIR_EMBEDDED
+  : DEFAULT_EN_SUBS_DIR_LEGACY;
 
 function parseArgs(argv) {
   const args = {
     query: null,
     subsDir: null,
-    enSubsDir: null,
-    videosDir: null,
+    enSubsDir: fs.existsSync(DEFAULT_EN_SUBS_DIR) ? DEFAULT_EN_SUBS_DIR : null,
+    videosDir: fs.existsSync(DEFAULT_VIDEOS_DIR) ? DEFAULT_VIDEOS_DIR : null,
     outDir: "out/shorts_work",
     outputDir: "out/shorts",
     wordList: "source_content/all_anime_top_2000.json",
@@ -22,10 +39,19 @@ function parseArgs(argv) {
     videoTop: 760,
     limit: 5,
     rank: true,
+    shuffle: false,
+    shuffleSeed: null,
+    shuffleTop: 0,
     prePadMs: 1500,
     postPadMs: 1500,
     maxClipMs: 2500,
     longPolicy: "shrink",
+    printTop: 0,
+    pick: null,
+    replace: [],
+    tailRepeat: 3,
+    brandQrUrl: "http://bundai.app/",
+    cleanOutputs: true,
     verbose: false,
   };
 
@@ -86,6 +112,17 @@ function parseArgs(argv) {
       case "rank":
         args.rank = true;
         break;
+      case "shuffle":
+        args.shuffle = true;
+        break;
+      case "shuffleSeed":
+        args.shuffleSeed = Number(v);
+        takeNext();
+        break;
+      case "shuffleTop":
+        args.shuffleTop = Number(v);
+        takeNext();
+        break;
       case "prePadMs":
         args.prePadMs = Number(v);
         takeNext();
@@ -102,6 +139,32 @@ function parseArgs(argv) {
         args.longPolicy = v;
         takeNext();
         break;
+      case "printTop":
+        args.printTop = Number(v);
+        takeNext();
+        break;
+      case "pick":
+        args.pick = String(v);
+        takeNext();
+        break;
+      case "replace":
+        args.replace.push(String(v));
+        takeNext();
+        break;
+      case "tailRepeat":
+        args.tailRepeat = Number(v);
+        takeNext();
+        break;
+      case "brandQrUrl":
+        args.brandQrUrl = v;
+        takeNext();
+        break;
+      case "cleanOutputs":
+        args.cleanOutputs = true;
+        break;
+      case "keepOutputs":
+        args.cleanOutputs = false;
+        break;
       case "verbose":
         args.verbose = true;
         break;
@@ -114,6 +177,25 @@ function parseArgs(argv) {
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });
+}
+
+function cleanOutputDirs({ outDir, outputDir, verbose }) {
+  const targets = [
+    path.resolve("out", "clips"),
+    path.resolve(outDir),
+    path.resolve(outputDir),
+  ];
+  const unique = Array.from(new Set(targets));
+
+  for (const absPath of unique) {
+    const rel = path.relative(process.cwd(), absPath);
+    // Safety rail: only allow deleting directories under ./out
+    if (rel.startsWith("..") || path.isAbsolute(rel) || !rel.startsWith("out")) {
+      throw new Error(`Refusing to delete non-output path: ${absPath}`);
+    }
+    if (verbose) console.log(`Cleaning output dir: ${absPath}`);
+    fs.rmSync(absPath, { recursive: true, force: true });
+  }
 }
 
 function safeFilename(s) {
@@ -153,6 +235,16 @@ function loadPngDataUri(filePath) {
   const b64 = fs.readFileSync(filePath).toString("base64");
   if (!b64) return "";
   return `data:image/png;base64,${b64}`;
+}
+
+async function buildQrDataUri(url, size) {
+  if (!url) return "";
+  if (!QRCode) QRCode = require("qrcode");
+  return QRCode.toDataURL(url, {
+    errorCorrectionLevel: "M",
+    margin: 0,
+    width: size,
+  });
 }
 
 function svgEscape(text) {
@@ -271,6 +363,7 @@ function renderSvgToPng({ svg, output }) {
 function buildSegmentOverlaySvg({
   width,
   height,
+  videoTop,
   query,
   queryReading,
   queryMeaning,
@@ -279,6 +372,7 @@ function buildSegmentOverlaySvg({
   romajiLine,
   enLine,
   logoDataUri,
+  qrDataUri,
   highlightColor,
   queryRomaji,
 }) {
@@ -286,35 +380,42 @@ function buildSegmentOverlaySvg({
   const fontJP = "Hiragino Sans, Noto Sans CJK JP, Arial";
   const fontEN = "Helvetica Neue, Arial, sans-serif";
   const margin = width * 0.08;
+  const videoHeight = (width * 9) / 16;
+  const videoBottom = videoTop + videoHeight;
 
-  const headerRectY = 78 * s;
-  const headerRectH = 350 * s;
-  const labelY = headerRectY + 64 * s;
-  const readingY = labelY + 58 * s;
-  const kanjiY = readingY + 108 * s;
-  const meaningY = kanjiY + 68 * s;
+  const headerRectH = 430 * s;
+  const headerRectY = Math.max(48 * s, videoTop - headerRectH - 116 * s);
+  const labelY = headerRectY + 86 * s;
+  const readingY = labelY + 82 * s;
+  const kanjiY = readingY + 134 * s;
+  const meaningY = kanjiY + 96 * s;
 
-  const enY = height - 242 * s;
-  const furiY = height - 190 * s;
-  const jpY = height - 138 * s;
-  const romajiY = height - 88 * s;
+  const subtitleTop = videoBottom + 26 * s;
+  const enY = subtitleTop + 42 * s;
+  const furiY = enY + 56 * s;
+  const jpY = furiY + 54 * s;
+  const romajiY = jpY + 52 * s;
 
   const jpSize = 54 * s;
   const furiSize = 30 * s;
   const enSize = 40 * s;
   const romajiSize = 34 * s;
   const jpLayout = layoutTokensCentered(jpTokens, width, width - margin * 2, jpSize);
-  const brandX = width - 290 * s;
-  const brandY = 500 * s;
-  const brandW = 250 * s;
-  const brandH = 130 * s;
-  const logoSize = 96 * s;
-  const logoX = brandX + 14 * s;
-  const logoY = brandY + 16 * s;
+  const brandW = 356 * s;
+  const brandH = 188 * s;
+  const brandX = width - brandW - 24 * s;
+  const brandY = 24 * s;
+  const brandPad = 14 * s;
+  const logoSize = 76 * s;
+  const logoX = brandX + brandPad;
+  const logoY = brandY + brandPad;
   const brandTitleX = logoX + logoSize + 12 * s;
-  const brandTitleY = logoY + 38 * s;
-  const brandSubY1 = brandTitleY + 26 * s;
+  const brandTitleY = logoY + 31 * s;
+  const brandSubY1 = brandTitleY + 25 * s;
   const brandSubY2 = brandSubY1 + 20 * s;
+  const qrSize = 86 * s;
+  const qrX = brandX + brandW - qrSize - brandPad;
+  const qrY = brandY + brandPad;
 
   const jpText = jpLayout
     .map(
@@ -331,21 +432,22 @@ function buildSegmentOverlaySvg({
   const romajiText = svgHighlight(romajiLine || "", queryRomaji || "", highlightColor, true);
   const enText = svgHighlight(enLine || "", queryMeaning || "", highlightColor, true);
   const brandBlock = `
-  <rect x="${brandX}" y="${brandY}" width="${brandW}" height="${brandH}" rx="${12 * s}" ry="${12 * s}" fill="rgba(0,0,0,0.48)"/>
+  <rect x="${brandX}" y="${brandY}" width="${brandW}" height="${brandH}" rx="${14 * s}" ry="${14 * s}" fill="rgba(27,58,48,0.9)" stroke="rgba(198,233,212,0.85)" stroke-width="${2 * s}"/>
   ${logoDataUri ? `<image x="${logoX}" y="${logoY}" width="${logoSize}" height="${logoSize}" href="${logoDataUri}" preserveAspectRatio="xMidYMid meet"/>` : ""}
+  ${qrDataUri ? `<image x="${qrX}" y="${qrY}" width="${qrSize}" height="${qrSize}" href="${qrDataUri}" preserveAspectRatio="xMidYMid meet"/>` : ""}
   <text x="${brandTitleX}" y="${brandTitleY}" text-anchor="start" font-family="${fontEN}" font-size="${30 * s}" font-weight="800" fill="#ffffff">Bundai</text>
-  <text x="${brandTitleX}" y="${brandSubY1}" text-anchor="start" font-family="${fontEN}" font-size="${13 * s}" font-weight="700" fill="#ffffff">Learn Japanese</text>
-  <text x="${brandTitleX}" y="${brandSubY2}" text-anchor="start" font-family="${fontEN}" font-size="${13 * s}" font-weight="700" fill="#ffffff">watching anime</text>
+  <text x="${brandTitleX}" y="${brandSubY1}" text-anchor="start" font-family="${fontEN}" font-size="${14 * s}" font-weight="700" fill="#d6efe2">Learn Japanese</text>
+  <text x="${brandTitleX}" y="${brandSubY2}" text-anchor="start" font-family="${fontEN}" font-size="${14 * s}" font-weight="700" fill="#d6efe2">watching anime</text>
   `;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
   <rect width="100%" height="100%" fill="transparent"/>
-  <rect x="${width * 0.05}" y="${headerRectY}" width="${width * 0.9}" height="${headerRectH}" rx="${24 * s}" ry="${24 * s}" fill="rgba(0,0,0,0.55)"/>
-  <text x="50%" y="${labelY}" text-anchor="middle" font-family="${fontEN}" font-size="${42 * s}" font-weight="700" fill="#ffffff">Kanji of the day</text>
-  <text x="50%" y="${readingY}" text-anchor="middle" font-family="${fontJP}" font-size="${52 * s}" font-weight="700" fill="#ffffff">${svgEscape(queryReading)}</text>
+  <rect x="${width * 0.05}" y="${headerRectY}" width="${width * 0.9}" height="${headerRectH}" rx="${24 * s}" ry="${24 * s}" fill="rgba(198,233,212,0.92)"/>
+  <text x="50%" y="${labelY}" text-anchor="middle" font-family="${fontEN}" font-size="${42 * s}" font-weight="800" fill="#1e3a34">Anime word of the day</text>
+  <text x="50%" y="${readingY}" text-anchor="middle" font-family="${fontJP}" font-size="${54 * s}" font-weight="700" fill="#1e3a34">${svgEscape(queryReading)}</text>
   <text x="50%" y="${kanjiY}" text-anchor="middle" font-family="${fontJP}" font-size="${126 * s}" font-weight="800" fill="#ffd900" stroke="#000000" stroke-width="${4 * s}" paint-order="stroke fill">${svgEscape(query)}</text>
-  <text x="50%" y="${meaningY}" text-anchor="middle" font-family="${fontEN}" font-size="${48 * s}" font-weight="700" fill="#ffffff">${svgEscape(queryMeaning || "Japanese in context")}</text>
+  <text x="50%" y="${meaningY}" text-anchor="middle" font-family="${fontEN}" font-size="${48 * s}" font-weight="800" fill="#1e3a34">${svgEscape(queryMeaning || "Japanese in context")}</text>
   ${brandBlock}
   <text x="50%" y="${enY}" text-anchor="middle" font-family="${fontEN}" font-size="${enSize}" font-weight="700" fill="#ffffff" stroke="#000000" stroke-width="${2 * s}" paint-order="stroke fill">${enText}</text>
   ${furiText}
@@ -361,29 +463,49 @@ function runFfmpegAppendTailVideo({
   width,
   height,
   tailDurationSec,
+  tailRepeat,
   verbose,
 }) {
-  const filter = [
+  const repeats = Math.max(1, Math.floor(Number(tailRepeat) || 1));
+  const args = ["-y", "-i", mainInput];
+  for (let i = 0; i < repeats; i++) args.push("-i", tailInput);
+  for (let i = 0; i < repeats; i++) {
+    args.push(
+      "-f",
+      "lavfi",
+      "-t",
+      String(tailDurationSec),
+      "-i",
+      "anullsrc=channel_layout=stereo:sample_rate=48000",
+    );
+  }
+
+  const filterParts = [
     `[0:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1[v0]`,
-    `[1:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1[v1]`,
     "[0:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a0]",
-    "[2:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a1]",
-    "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]",
-  ].join(";");
-  const args = [
-    "-y",
-    "-i",
-    mainInput,
-    "-i",
-    tailInput,
-    "-f",
-    "lavfi",
-    "-t",
-    String(tailDurationSec),
-    "-i",
-    "anullsrc=channel_layout=stereo:sample_rate=48000",
+  ];
+  for (let i = 0; i < repeats; i++) {
+    const videoInputIdx = i + 1;
+    const audioInputIdx = repeats + 1 + i;
+    const partIdx = i + 1;
+    filterParts.push(
+      `[${videoInputIdx}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1[v${partIdx}]`,
+    );
+    filterParts.push(
+      `[${audioInputIdx}:a]aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a${partIdx}]`,
+    );
+  }
+
+  const concatInputs = ["[v0][a0]"];
+  for (let i = 0; i < repeats; i++) {
+    const partIdx = i + 1;
+    concatInputs.push(`[v${partIdx}][a${partIdx}]`);
+  }
+  filterParts.push(`${concatInputs.join("")}concat=n=${repeats + 1}:v=1:a=1[v][a]`);
+
+  args.push(
     "-filter_complex",
-    filter,
+    filterParts.join(";"),
     "-map",
     "[v]",
     "-map",
@@ -405,7 +527,7 @@ function runFfmpegAppendTailVideo({
     "-movflags",
     "+faststart",
     output,
-  ];
+  );
   spawnOrThrow("ffmpeg", args, verbose);
 }
 
@@ -473,7 +595,12 @@ function runFfmpegVerticalTimed({
 async function main() {
   const args = parseArgs(process.argv);
   if (!args.query || !args.subsDir || !args.videosDir) {
-    throw new Error("Required: --query --subsDir --videosDir");
+    throw new Error(
+      `Required: --query --subsDir [--videosDir]. Default videos dir: ${DEFAULT_VIDEOS_DIR}`,
+    );
+  }
+  if (args.cleanOutputs) {
+    cleanOutputDirs({ outDir: args.outDir, outputDir: args.outputDir, verbose: args.verbose });
   }
   ensureDir(args.outDir);
   ensureDir(args.outputDir);
@@ -500,11 +627,20 @@ async function main() {
     "--longPolicy",
     String(args.longPolicy),
     "--concat",
+    "--concatOnly",
     "--flatOut",
     "--manifest",
   ];
   if (args.enSubsDir) extractArgs.push("--enSubsDir", args.enSubsDir);
   if (args.rank) extractArgs.push("--rank");
+  if (args.shuffle) extractArgs.push("--shuffle");
+  if (Number.isFinite(args.shuffleSeed)) extractArgs.push("--shuffleSeed", String(args.shuffleSeed));
+  if (Number.isFinite(args.shuffleTop) && args.shuffleTop > 0) {
+    extractArgs.push("--shuffleTop", String(args.shuffleTop));
+  }
+  if (args.printTop > 0) extractArgs.push("--printTop", String(args.printTop));
+  if (args.pick) extractArgs.push("--pick", args.pick);
+  for (const r of args.replace) extractArgs.push("--replace", r);
   if (args.verbose) extractArgs.push("--verbose");
 
   console.log("Step 1/2: Extracting clean stitched clip...");
@@ -527,6 +663,7 @@ async function main() {
   const queryRomaji = toRomaji(queryReading);
   const highlightColor = "#ffd900";
   const logoDataUri = loadPngDataUri(path.resolve("source_content", "logo.png"));
+  const qrDataUri = await buildQrDataUri(args.brandQrUrl, 192);
 
   let t = 0;
   const overlays = [];
@@ -564,6 +701,7 @@ async function main() {
     const svg = buildSegmentOverlaySvg({
       width: args.width,
       height: args.height,
+      videoTop: args.videoTop,
       query: args.query,
       queryReading,
       queryMeaning,
@@ -572,6 +710,7 @@ async function main() {
       romajiLine: romaji,
       enLine: c.enText || "",
       logoDataUri,
+      qrDataUri,
       highlightColor,
       queryRomaji,
     });
@@ -596,6 +735,7 @@ async function main() {
   const cardVideoPath = path.resolve("source_content", "card.mp4");
   if (fs.existsSync(cardVideoPath)) {
     const tailDurationSec = readDurationSec(cardVideoPath);
+    const tailRepeat = Math.max(1, Math.floor(Number(args.tailRepeat) || 1));
     if (tailDurationSec > 0) {
       const finalOut = outPath.replace(/\.mp4$/i, "_with_card.mp4");
       runFfmpegAppendTailVideo({
@@ -605,11 +745,14 @@ async function main() {
         width: args.width,
         height: args.height,
         tailDurationSec,
+        tailRepeat,
         verbose: args.verbose,
       });
       fs.unlinkSync(outPath);
       fs.renameSync(finalOut, outPath);
-      console.log(`Appended video end card (source_content/card.mp4) to: ${outPath}`);
+      console.log(
+        `Appended video end card (source_content/card.mp4) x${tailRepeat} to: ${outPath}`,
+      );
     }
   }
 
