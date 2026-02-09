@@ -3,13 +3,21 @@ dist
 .DS_Store
 .env
 
-# Ignore the output video from Git but not videos you import into src/.
+# Do not commit rendered/working outputs.
 out
-out/**/*.mp4
-out/**/*.mov
-out/**/*.webm
-out/**/*.mkv
 clips
+dissfiles
+
+# Do not commit video files from this repo.
+*.mp4
+*.mov
+*.webm
+*.mkv
+*.avi
+*.m4v
+
+# Keep source_content private except selected static assets.
 source_content/*
 !source_content/logo.png
-!source_content/card.mp4
+
+public/auto-short/videos/*.mp4
