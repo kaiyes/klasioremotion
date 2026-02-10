@@ -1,247 +1,214 @@
 # Summary Of Work
 
+Last updated: `2026-02-09`
+
 ## Resume IDs
 - `snk-furigana-center-romaji-fix-2026-02-06`
 - `snk-vertical-clean-shorts-highlight-card-logo-2026-02-06`
 - `snk-aot-pipeline-handoff-2026-02-08`
 
-## Big Picture Plan
-1. Build a stable word-in-context clip extractor from JP subtitles.
-2. Keep JP + furigana + romaji + EN readable and centered.
-3. Produce clean vertical shorts (1080x1920) with:
-   - word card above video
-   - subtitle block below video
-   - Bundai logo + QR branding in corner
-4. Append end card video (`source_content/card.mp4`) to final shorts.
-5. Normalize episode file naming across videos/subs so matching is reliable.
-6. Add subtitle sync calibration (Whisper + offset estimation) for hard episodes.
+## Current Snapshot
+- Video files: `89`
+- JP subtitle files: `89`
+- EN subtitle files (embedded extract): `89`
+- Canonical dataset root:
+  - `source_content/shingeki_no_kyojin/videos`
+  - `source_content/shingeki_no_kyojin/subs/japanese`
+  - `source_content/shingeki_no_kyojin/subs/english_embedded`
+- Active sync outputs:
+  - `source_content/shingeki_no_kyojin/subs/sub-offsets.json`
+  - `source_content/shingeki_no_kyojin/subs/sub-sync-db.json`
+- Word candidate DB:
+  - `source_content/shingeki_no_kyojin/subs/word-candidates-db.json`
+- LLM rerank output:
+  - `source_content/shingeki_no_kyojin/subs/word-candidates-llm-top.json`
+- Match-form output (active full file):
+  - `source_content/all_anime_top_2000.match.first2000.json`
 
-## Current Data Layout
-- Videos: `source_content/shingeki_no_kyojin/videos`
-- JP subs: `source_content/shingeki_no_kyojin/subs/japanese`
-- EN subs: `source_content/shingeki_no_kyojin/subs/english`
-- Brand logo: `source_content/logo.png`
-- End card video: `source_content/card.mp4`
-- Sync artifacts: `dissfiles/`
+## What Is Implemented
 
-Current state target: all 3 episode sets (video/JP/EN) use `sXeY` naming and match by episode.
-
-## What Was Implemented
-
-### 1) Extraction + Matching Core
-File: `scripts/extract-clips.js`
-- Added EN subtitle auto-detect when `--subsDir` has sibling `english`.
-- Added robust EN mapping fallback:
-  - exact `SxxEyy`
-  - global cumulative mapping across seasons (`E01..E89`)
-  - local `Eyy` fallback
-- Added sentence dedupe so repeated sentence text is not selected twice.
-- Added manual candidate control:
+### 1) Core Extractor (`scripts/extract-clips.js`)
+- JP query matching from ASS/SRT.
+- `match.forms` / `match.exclude` support from `--wordList` entries.
+  - Query can now match conjugations/variants without creating separate objects.
+  - Compact-form preference avoids selecting long phrase fragments as the primary match.
+- EN alignment from sibling EN subs.
+- Per-episode/per-season offset application from `sub-offsets.json`.
+- Candidate scoring (`--rank`) and dedupe by normalized sentence text.
+- Manual candidate control:
   - `--printTop`
   - `--pick`
   - `--replace` (`3=12`, `last=15`)
-- Added duplicate protection in replace flow (rejects duplicate sentence output).
-- Improved JP token centering/furigana placement logic.
-- Improved romaji token joining (`ん`, small kana, etc.) to avoid broken splits like `arumi n`.
-- Supports concat cleanup (`--concatOnly`) and manifest output.
-- Supports brand/end-card path (`logo.png`, `card.mp4`, fallback `card.png`).
+- Shuffle support:
+  - `--shuffle`
+  - `--shuffleSeed`
+  - `--shuffleTop`
+- Candidate export:
+  - `--candidatesOut` writes `planned`, `pool`, `selected`.
+- Subtitle text sanitizer now strips ASS/HTML styling debris from embedded EN (prevents rendering garbage like `size="78"><i><b>`).
+- Romaji continuation join fix (avoids splits like `arumi n`).
 
-### 2) Vertical Shorts Pipeline (clean layout)
-File: `scripts/make-vertical-shorts-clean.js`
-- Builds 1080x1920 shorts with:
-  - black background
+### 2) Vertical Shorts (`scripts/make-vertical-shorts-clean.js`)
+- Clean `1080x1920` output with:
+  - top word card
   - centered 16:9 video strip
-  - pale green top card (`Anime word of the day`, reading, kanji, meaning)
-  - subtitle overlay block just below video (EN + furigana + JP + romaji)
-  - top-right Bundai brand block with logo + QR
-- Pulls clip metadata from extractor manifest.
-- Highlights target word in JP/furigana/romaji/EN lines.
-- Forwards selector controls to extractor (`--printTop`, `--pick`, `--replace`).
-- Appends `source_content/card.mp4` tail and supports repeat count via `--tailRepeat` (default `3`).
-- Cleans rerun outputs by default:
+  - subtitle block below video
+  - Bundai logo + QR corner block
+- Family meaning memory:
+  - if run with `--family ... --meaning ...`, the meaning is saved to `source_content/family-meanings.json`
+  - next runs reuse saved family meaning automatically (no repeat `--meaning` needed)
+  - family mode no longer falls back to root-word meaning (prevents wrong cards like `お前ら -> before`)
+- Forwards candidate control flags to extractor:
+  - `--printTop`, `--pick`, `--replace`
+  - `--shuffle`, `--shuffleSeed`, `--shuffleTop`
+- Tail append:
+  - appends `source_content/card.mp4`
+  - repeats controlled by `--tailRepeat` (default `3`)
+- Output clean on rerun (default):
   - `out/clips`
   - `out/shorts_work`
   - `out/shorts`
-  - disable with `--keepOutputs`.
+  - disable with `--keepOutputs`
 
-Why two folders:
-- `out/shorts_work`: intermediate stitched and overlay assets
-- `out/shorts`: final rendered shorts
+### 3) Embedded EN Extraction
+Script: `scripts/extract-embedded-english-subs.js`
+- Extracts best embedded English subtitle stream per episode.
+- Writes canonical EN files to:
+  - `source_content/shingeki_no_kyojin/subs/english_embedded/sXeY.srt`
 
-### 3) Batch/Automation Commands
-File: `package.json`
-- Added/updated scripts for direct AOT workflow:
-  - `extract-clips:aot`
-  - `batch-extract:aot`
-  - `shorts-clean:aot`
-  - `shorts-render:aot`
-  - `shorts-all:aot`
-- Added rename/sync tooling commands:
-  - `rename-videos-from-subs`
-  - `rename-english-subs`
-  - `flatten-videos`
-  - `link-subs`
-  - `normalize-episode-names`
-  - `estimate-sub-offset`
-  - `calibrate-sub-sync`
-  - `sync-word-check`
-  - `align-episode-subs`
-  - `align-all-episode-subs`
+### 4) Sync Tooling
+- `scripts/sync-word-check.js`
+- `scripts/estimate-sub-offset.js`
+- `scripts/calibrate-sub-sync.js`
+- `scripts/align-episode-subs.js`
+- `scripts/align-all-episode-subs.js`
+- `scripts/recalibrate-english-offsets.js`
 
-### 4) File Naming / Migration Helpers
-- `scripts/normalize-episode-names.js`:
-  - normalizes files to `sXeY.ext` in-place
-- `scripts/flatten-videos-by-episode.js`:
-  - flattens season folders into one folder with `S01ep01.ext`
-- `scripts/rename-videos-from-subs.js`:
-  - maps videos to subtitle episode structure
-- `scripts/link-subs-to-videos.js`:
-  - link/copy subtitles next to flattened video naming
-- `scripts/rename-english-subs.js`:
-  - maps global EN numbering (`01..89`) to `sXeY.srt`
+Notes:
+- Defaults were updated to prefer `english_embedded` over legacy `english` in sync-related scripts.
+- `align-episode-subs` supports midpoint check clips via `--checkAt middle`.
 
-### 5) Sync Calibration Tooling
-- `scripts/estimate-sub-offset.js`:
-  - scores constant offsets by matching ASR segments vs subtitle lines
-- `scripts/calibrate-sub-sync.js`:
-  - runs ffmpeg + whisper + estimator over sample windows
-  - retries on low/no alignment
-  - writes `source_content/shingeki_no_kyojin/subs/sub-offsets.json` with `--apply`
-  - blocks low-confidence save unless `--allowLowConfidence`
-- `scripts/sync-word-check.js`:
-  - quick clip-based visual check for a known early word across multiple offsets
-  - output under `dissfiles/sync-check/...`
-- `scripts/align-episode-subs.js`:
-  - aligns one episode by using embedded subtitle stream in video as timing reference
-  - estimates JP and EN offsets separately
-  - writes machine-readable result JSON (`--resultJson`)
-  - can skip check render for speed (`--noCheck`)
-- `scripts/align-all-episode-subs.js`:
-  - runs `align-episode-subs` across all episodes that exist in video + JP + EN
-  - persists durable DB:
-    - `source_content/shingeki_no_kyojin/subs/sub-sync-db.json`
-  - updates runtime offsets file:
-    - `source_content/shingeki_no_kyojin/subs/sub-offsets.json`
-  - supports incremental reruns (skip already-synced episodes unless `--force`)
+### 5) Word Candidate Database
+Script: `scripts/build-word-candidates-db.js`
+- Runs extractor in `--dryRun` mode for each word from `source_content/all_anime_top_2000.match.first2000.json`.
+- Passes `--wordList` into extractor so `match.forms` is respected during DB build.
+- Stores candidates (including `jpText`, `enText`, episode/time, score) in one JSON:
+  - `source_content/shingeki_no_kyojin/subs/word-candidates-db.json`
+- Supports:
+  - `--count` (first N words)
+  - `--mode line|sentence`
+  - `--maxPerWord`
 
-## What Went Right
-- Furigana alignment and JP centering were fixed using token-centered layout.
-- Romaji split artifacts (`arumi n`) were fixed by continuation-token joining.
-- EN matching became reliable after season-cumulative mapping and EN renaming.
-- Duplicate sentence clips were blocked by dedupe + replace validation.
-- Final card append is stable using `card.mp4` and repeat control.
-- Large generated outputs are ignored in git; only selected source assets are tracked.
+Important:
+- Current implementation is serial and writes final DB at end (not checkpoint-resumable mid-run yet).
 
-## What Went Wrong (and How It Was Corrected)
-- EN lines mismatched JP lines:
-  - cause: EN files used different numbering scheme
-  - fix: global episode mapping + EN renaming tool.
-- Duplicate clips in same short:
-  - cause: repeated subtitle sentence candidates
-  - fix: sentence-key dedupe + duplicate guard in replacement.
-- Missing/incorrect end card:
-  - cause: earlier image/video tail path behavior mismatch
-  - fix: explicit `card.mp4` append at end of clean shorts.
-- “Only top 25 words” confusion:
-  - practical blocker was incomplete EN coverage at the time; once EN set was complete, full runs worked.
-- Subtitle sync still drifts on some episodes:
-  - constant-offset model is not perfect; calibration per episode is required in problematic cases.
+### 6) Ollama Rerank Pipeline
+Script: `scripts/rerank-word-candidates-ollama.js`
+- Reads `word-candidates-db.json`.
+- Ranks top examples per word for beginner usefulness.
+- Writes output after each processed word using atomic writes (resumable).
+- Supports:
+  - `--resume`, `--force`
+  - `--count`, `--fromIndex`
+  - `--topK`, `--maxCandidates`
+  - `--model`, `--host`, `--timeoutSec`, `--retries`
+  - `--requireMeaningful` (default on) to reject trivial rankings
+- Ollama call fallback chain:
+  1. `/api/chat`
+  2. `/api/generate`
+  3. `ollama run` CLI fallback
 
-## Current Command Cheat Sheet
+### 7) Match-Form Generator
+Script: `scripts/generate-word-match-forms.js`
+- Builds `match.forms` using JP subtitle corpus + kuromoji tokenization.
+- Captures:
+  - lemma/conjugation variants (e.g. `知る` -> `知っ`, `知ら`, `知り`)
+  - common literal compounds (e.g. `前` -> `お前`, `目の前`, `前に`, `名前`)
+- Writes an updated words JSON; active output:
+  - `source_content/all_anime_top_2000.match.first2000.json`
+
+## NPM Commands Added / Updated
+- `extract-embedded-english-subs`
+- `generate-word-match-forms`
+- `generate-word-match-forms:aot`
+- `extract-family-clips`
+- `extract-family-clips:aot`
+- `family-list`
+- `family-list:aot`
+- `build-word-candidates-db`
+- `build-word-candidates-db:aot`
+- `rerank-word-candidates:ollama`
+- `rerank-word-candidates:ollama:aot`
+- `extract-clips:aot` (uses `english_embedded`)
+- `shorts-clean:aot` (uses `english_embedded`)
+
+## Command Cheat Sheet
+
+### Extract embedded EN for all episodes
+```bash
+npm run -s extract-embedded-english-subs -- --overwrite
+```
+
+### Build candidate DB for first 100 words, line mode, up to 50 candidates each
+```bash
+npm run -s build-word-candidates-db:aot -- --count 100 --mode line --maxPerWord 50
+```
+
+### Generate `match.forms` for first 100 words
+```bash
+npm run -s generate-word-match-forms:aot
+```
+
+### List families for a root word (fast, no rendering)
+```bash
+npm run -s family-list:aot -- --query 前
+```
+
+### Render family-mode clips/short
+```bash
+npm run -s extract-family-clips:aot -- --query 前 --family お前ら --limit 5
+```
+
+### Run Ollama rerank (top 5 per word), resumable
+```bash
+npm run -s rerank-word-candidates:ollama:aot -- --model "llama3.2:latest" --count 100 --topK 5 --maxCandidates 50 --resume
+```
 
 ### Generate one clean short
 ```bash
-npm run shorts-clean:aot -- --query 言う --limit 7
+npm run -s shorts-clean:aot -- --query 言う --limit 7
 ```
 
-### Inspect and manually choose better candidates
+### Generate with shuffle (seeded)
 ```bash
-npm run shorts-clean:aot -- --query 今 --limit 7 --printTop 25
-npm run shorts-clean:aot -- --query 今 --limit 7 --pick 1,2,12,4,5,6,7
-npm run shorts-clean:aot -- --query 今 --limit 7 --replace 3=9 --replace last=12
+npm run -s shorts-clean:aot -- --query 言う --limit 7 --shuffle --shuffleSeed 42 --shuffleTop 30
 ```
 
-### Keep old outputs instead of auto-clean
+### Manual candidate override
 ```bash
-npm run shorts-clean:aot -- --query 言う --limit 7 --keepOutputs
+npm run -s shorts-clean:aot -- --query 今 --limit 7 --printTop 25
+npm run -s shorts-clean:aot -- --query 今 --limit 7 --pick 1,2,12,4,5,6,7
+npm run -s shorts-clean:aot -- --query 今 --limit 7 --replace 3=9 --replace last=12
 ```
 
-### Change end-card repeat count
+### Midpoint one-minute sync check clip
 ```bash
-npm run shorts-clean:aot -- --query 言う --limit 7 --tailRepeat 3
+npm run -s align-episode-subs -- --episode s4e30 --enSubsDir source_content/shingeki_no_kyojin/subs/english_embedded --checkDurationSec 60 --checkAt middle --checkOut dissfiles/sub-sync/checks/s4e30_check.mp4
 ```
 
-### Rename EN subtitles to `sXeY.srt`
-```bash
-npm run rename-english-subs -- --apply
-```
+## Known Gaps / Risks
+- `build-word-candidates-db.js` is still heavy/serial for very large runs (`2000` words can take long).
+- Candidate highlight for JP can miss phrases split across tokenizer boundaries (example: some conjugations like `知らない` split into multiple tokens).
+- Auto-generated `match.forms` can still contain some noisy short phrase fragments; file is intended to be editable and can be refined incrementally.
+- LLM rerank quality depends on model output discipline; script now rejects weak/trivial JSON by default and falls back to heuristic when needed.
 
-### Normalize season/episode names in place
-```bash
-npm run normalize-episode-names -- --apply
-```
+## Git / Asset Notes
+- `.gitignore` currently ignores:
+  - `out`, `clips`, `dissfiles`
+  - all video media extensions globally
+  - all `source_content/*` except `source_content/logo.png`
+- `source_content/card.mp4` is not whitelisted in `.gitignore` right now.
 
-### Quick sync visual test on one episode/word
-```bash
-npm run sync-word-check -- --episode s4e30 --query "何だろう" --offsets 0,4500,4800
-```
-
-### Calibrate and save subtitle offset
-```bash
-npm run calibrate-sub-sync -- --episode s4e30 --sampleSec 60 --maxAttempts 4 --apply
-```
-
-If calibration says low confidence, either increase sample/retries or force-save:
-```bash
-npm run calibrate-sub-sync -- --episode s4e30 --sampleSec 90 --maxAttempts 6 --apply --allowLowConfidence
-```
-
-### Align one episode with embedded subtitle reference (JP + EN)
-```bash
-npm run align-episode-subs -- --episode s4e30 --sampleSec 1200 --write --checkOut dissfiles/s4e30_aligned_check.mp4
-```
-
-### Align all episodes once and persist DB + offsets JSON
-```bash
-npm run align-all-episode-subs -- --sampleSec 1200 --checkEvery 0
-```
-
-## Git / Large File Safety
-File: `.gitignore`
-- Ignored:
-  - `out`
-  - `out/**/*.mp4|mov|webm|mkv`
-  - `clips`
-  - `dissfiles`
-  - `source_content/*`
-- Allowed (explicitly tracked):
-  - `source_content/logo.png`
-  - `source_content/card.mp4`
-
-## Practical Notes For Next Thread
-- Default short run now expects full dataset at:
-  - `source_content/shingeki_no_kyojin/videos`
-  - `source_content/shingeki_no_kyojin/subs/japanese`
-  - `source_content/shingeki_no_kyojin/subs/english`
-- If EN line is missing in output, verify matching `sXeY` file exists in EN folder.
-- If one clip is bad, use `--replace` instead of rerolling everything.
-- If sync is off on an episode, calibrate once and save offset JSON, then rerun.
-- Reruns clean output folders by default; add `--keepOutputs` only when needed.
-
-## Latest Sync DB Snapshot
-- Ran batch align across full set (`89` episodes) and saved:
-  - `source_content/shingeki_no_kyojin/subs/sub-offsets.json`
-  - `source_content/shingeki_no_kyojin/subs/sub-sync-db.json`
-- Current DB status:
-  - `ok`: `82`
-  - `needs_review`: `7`
-  - `error`: `0`
-- Current review list:
-  - `s3e11`, `s3e12`, `s3e13`, `s3e15`, `s3e22`, `s4e29`, `s4e30`
-
-## Open Improvements (Not Done Yet)
-- Small local UI for:
-  - candidate preview/selection
-  - “replace clip #N” interactions
-  - one-click rerender
-- Optional smarter sync model (piecewise offsets or anchor words) for episodes where constant offset is insufficient.
+## Related Docs
+- `AUTO_SHORT_THREAD_HANDOFF.md`
+- `README.md`

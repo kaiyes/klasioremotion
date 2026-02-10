@@ -24,16 +24,18 @@ const DEFAULT_EN_SUBS_DIR_LEGACY = path.join(
 const DEFAULT_EN_SUBS_DIR = fs.existsSync(DEFAULT_EN_SUBS_DIR_EMBEDDED)
   ? DEFAULT_EN_SUBS_DIR_EMBEDDED
   : DEFAULT_EN_SUBS_DIR_LEGACY;
+const DEFAULT_FAMILY_MEANINGS_FILE = path.join("source_content", "family-meanings.json");
 
 function parseArgs(argv) {
   const args = {
     query: null,
+    matchContains: null,
     subsDir: null,
     enSubsDir: fs.existsSync(DEFAULT_EN_SUBS_DIR) ? DEFAULT_EN_SUBS_DIR : null,
     videosDir: fs.existsSync(DEFAULT_VIDEOS_DIR) ? DEFAULT_VIDEOS_DIR : null,
     outDir: "out/shorts_work",
     outputDir: "out/shorts",
-    wordList: "source_content/all_anime_top_2000.json",
+    wordList: "source_content/all_anime_top_2000.match.first2000.json",
     width: 1080,
     height: 1920,
     videoTop: 760,
@@ -49,6 +51,9 @@ function parseArgs(argv) {
     printTop: 0,
     pick: null,
     replace: [],
+    meaning: null,
+    familyMeaningsFile: DEFAULT_FAMILY_MEANINGS_FILE,
+    mode: "line",
     tailRepeat: 3,
     brandQrUrl: "http://bundai.app/",
     cleanOutputs: true,
@@ -71,6 +76,10 @@ function parseArgs(argv) {
         break;
       case "subsDir":
         args.subsDir = v;
+        takeNext();
+        break;
+      case "matchContains":
+        args.matchContains = String(v || "").trim() || null;
         takeNext();
         break;
       case "enSubsDir":
@@ -149,6 +158,18 @@ function parseArgs(argv) {
         break;
       case "replace":
         args.replace.push(String(v));
+        takeNext();
+        break;
+      case "meaning":
+        args.meaning = v;
+        takeNext();
+        break;
+      case "familyMeaningsFile":
+        args.familyMeaningsFile = String(v || "").trim();
+        takeNext();
+        break;
+      case "mode":
+        args.mode = String(v || "line");
         takeNext();
         break;
       case "tailRepeat":
@@ -331,6 +352,43 @@ function joinRomajiTokens(tokens, romajiTokens) {
   return out.join(" ");
 }
 
+function compactTextNoSpaces(text) {
+  return String(text || "").replace(/\s+/g, "");
+}
+
+function buildTokenSpansBySurface(tokens) {
+  let cursor = 0;
+  return tokens.map((t) => {
+    const surface = String(t?.surface_form || "");
+    const start = cursor;
+    const end = start + surface.length;
+    cursor = end;
+    return { start, end };
+  });
+}
+
+function collectTextRanges(text, terms) {
+  const source = compactTextNoSpaces(text);
+  const ranges = [];
+  for (const raw of terms || []) {
+    const needle = compactTextNoSpaces(raw);
+    if (!needle) continue;
+    let from = 0;
+    while (from < source.length) {
+      const idx = source.indexOf(needle, from);
+      if (idx < 0) break;
+      ranges.push({ start: idx, end: idx + needle.length });
+      from = idx + Math.max(1, needle.length);
+    }
+  }
+  return ranges;
+}
+
+function tokenSpanHitsAnyRange(span, ranges) {
+  if (!span || !Array.isArray(ranges) || ranges.length === 0) return false;
+  return ranges.some((r) => span.start < r.end && span.end > r.start);
+}
+
 async function buildTokenizer() {
   if (!kuromoji) kuromoji = require("kuromoji");
   const dicPath = path.join("node_modules", "kuromoji", "dict");
@@ -344,14 +402,64 @@ function normalizeMeaning(meaning) {
   return String(meaning).split(/[;,.]/)[0].trim();
 }
 
-function loadWordMeta(wordList, query) {
-  if (!fs.existsSync(wordList)) return { reading: "", meaning: "" };
+function loadWordList(wordList) {
+  if (!wordList || !fs.existsSync(wordList)) return [];
   const arr = JSON.parse(fs.readFileSync(wordList, "utf8"));
-  const found = arr.find((x) => x.word === query);
+  return Array.isArray(arr) ? arr : [];
+}
+
+function findWordMeta(entries, query) {
+  if (!query || !Array.isArray(entries) || entries.length === 0) return { reading: "", meaning: "" };
+  const found = entries.find((x) => x?.word === query);
   return {
     reading: found?.reading || "",
     meaning: normalizeMeaning(found?.meaning || ""),
   };
+}
+
+function loadFamilyMeaningMap(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+  } catch {}
+  return {};
+}
+
+function getFamilyMeaningOverride(map, query, family) {
+  if (!family || !map || typeof map !== "object") return "";
+  const direct = map[family];
+  if (typeof direct === "string" && direct.trim()) return normalizeMeaning(direct);
+  const nested = map[query];
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    const v = nested[family];
+    if (typeof v === "string" && v.trim()) return normalizeMeaning(v);
+  }
+  return "";
+}
+
+function saveFamilyMeaningOverride({ filePath, map, query, family, meaning }) {
+  if (!filePath || !family || !meaning) return false;
+  const normalized = normalizeMeaning(meaning);
+  if (!normalized) return false;
+
+  let changed = false;
+  if (map[family] !== normalized) {
+    map[family] = normalized;
+    changed = true;
+  }
+  if (!map[query] || typeof map[query] !== "object" || Array.isArray(map[query])) {
+    map[query] = {};
+  }
+  if (map[query][family] !== normalized) {
+    map[query][family] = normalized;
+    changed = true;
+  }
+  if (!changed) return false;
+
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(map, null, 2));
+  return true;
 }
 
 function renderSvgToPng({ svg, output }) {
@@ -606,10 +714,14 @@ async function main() {
   ensureDir(args.outputDir);
 
   const querySlug = safeFilename(args.query);
+  const familySlug = args.matchContains ? `_${safeFilename(args.matchContains)}` : "";
+  const outputSlug = `${querySlug}${familySlug}`;
   const extractArgs = [
     "scripts/extract-clips.js",
     "--query",
     args.query,
+    "--wordList",
+    args.wordList,
     "--subsDir",
     args.subsDir,
     "--videosDir",
@@ -618,6 +730,8 @@ async function main() {
     args.outDir,
     "--limit",
     String(args.limit),
+    "--mode",
+    args.mode,
     "--prePadMs",
     String(args.prePadMs),
     "--postPadMs",
@@ -632,6 +746,8 @@ async function main() {
     "--manifest",
   ];
   if (args.enSubsDir) extractArgs.push("--enSubsDir", args.enSubsDir);
+  if (args.matchContains) extractArgs.push("--matchContains", args.matchContains);
+  if (args.meaning) extractArgs.push("--meaning", args.meaning);
   if (args.rank) extractArgs.push("--rank");
   if (args.shuffle) extractArgs.push("--shuffle");
   if (Number.isFinite(args.shuffleSeed)) extractArgs.push("--shuffleSeed", String(args.shuffleSeed));
@@ -656,10 +772,42 @@ async function main() {
   if (clips.length === 0) throw new Error("Manifest has no clips.");
 
   const tokenizer = await buildTokenizer();
-  const meta = loadWordMeta(args.wordList, args.query);
+  const wordEntries = loadWordList(args.wordList);
+  const displayWord = args.matchContains || args.query;
+  const displayMeta = findWordMeta(wordEntries, displayWord);
+  const queryMeta = findWordMeta(wordEntries, args.query);
+  const familyMeaningMap = loadFamilyMeaningMap(args.familyMeaningsFile);
+  const rememberedFamilyMeaning = getFamilyMeaningOverride(
+    familyMeaningMap,
+    args.query,
+    args.matchContains,
+  );
+  if (args.matchContains && args.meaning) {
+    saveFamilyMeaningOverride({
+      filePath: args.familyMeaningsFile,
+      map: familyMeaningMap,
+      query: args.query,
+      family: args.matchContains,
+      meaning: args.meaning,
+    });
+  }
+
+  const isFamilyMode = Boolean(args.matchContains && args.matchContains !== args.query);
   const queryReading =
-    meta.reading || toHiragana(tokenizer.tokenize(args.query).map((t) => t.reading || t.surface_form).join(""));
-  const queryMeaning = meta.meaning || "";
+    displayMeta.reading ||
+    toHiragana(tokenizer.tokenize(displayWord).map((t) => t.reading || t.surface_form).join(""));
+  const queryMeaning = normalizeMeaning(
+    args.meaning ||
+      rememberedFamilyMeaning ||
+      displayMeta.meaning ||
+      (!isFamilyMode ? queryMeta.meaning : "") ||
+      "",
+  );
+  if (isFamilyMode && !queryMeaning) {
+    console.log(
+      `No saved meaning for family "${args.matchContains}". Pass --meaning once to remember it.`,
+    );
+  }
   const queryRomaji = toRomaji(queryReading);
   const highlightColor = "#ffd900";
   const logoDataUri = loadPngDataUri(path.resolve("source_content", "logo.png"));
@@ -674,23 +822,45 @@ async function main() {
     const end = t + dur;
     t = end;
 
-    const jpText = String(c.sentenceText || "").replace(/\s+/g, "");
+    const jpText = compactTextNoSpaces(c.sentenceText);
+    const clipMatch = String(c.matchText || args.matchContains || args.query || "");
     const tokens = tokenizer.tokenize(jpText);
-    const jpTokens = tokens.map((x) => {
+    const tokenSpans = buildTokenSpansBySurface(tokens);
+    const tokenMatchRanges = collectTextRanges(jpText, [clipMatch, displayWord, args.query]);
+    const hasRangeHighlight = tokenMatchRanges.length > 0;
+
+    const jpTokens = tokens.map((x, tokenIdx) => {
       const surface = x.surface_form || "";
+      const base = x.basic_form && x.basic_form !== "*" ? x.basic_form : "";
+      const fallbackHit =
+        (clipMatch && surface.includes(clipMatch)) ||
+        (displayWord && surface.includes(displayWord)) ||
+        (args.query && surface.includes(args.query)) ||
+        (base && ((clipMatch && base.includes(clipMatch)) || base.includes(args.query)));
+      const spanHit = tokenSpanHitsAnyRange(tokenSpans[tokenIdx], tokenMatchRanges);
+      const highlight = hasRangeHighlight ? spanHit : fallbackHit;
       return {
         surface,
-        color: surface.includes(args.query) ? highlightColor : "#ffffff",
+        color: highlight ? highlightColor : "#ffffff",
       };
     });
-    const furiTokens = tokens.map((x) => {
+    const furiTokens = tokens.map((x, tokenIdx) => {
       const surface = x.surface_form || "";
       const reading = toHiragana(x.reading || surface);
       const hasKanji = Array.from(surface).some(isKanjiChar);
+      const spanHit = tokenSpanHitsAnyRange(tokenSpans[tokenIdx], tokenMatchRanges);
+      const fallbackSurfaceHit =
+        (clipMatch && surface.includes(clipMatch)) ||
+        (displayWord && surface.includes(displayWord));
+      const surfaceHit = hasRangeHighlight ? spanHit : fallbackSurfaceHit;
       return {
         surface,
         text: hasKanji ? reading : "",
-        color: hasKanji && reading.includes(queryReading) ? highlightColor : "#ffffff",
+        color:
+          hasKanji &&
+          (surfaceHit || (!hasRangeHighlight && queryReading && reading.includes(queryReading)))
+            ? highlightColor
+            : "#ffffff",
       };
     });
     const romajiTokens = tokens.map((x) =>
@@ -702,7 +872,7 @@ async function main() {
       width: args.width,
       height: args.height,
       videoTop: args.videoTop,
-      query: args.query,
+      query: displayWord,
       queryReading,
       queryMeaning,
       jpTokens,
@@ -719,7 +889,7 @@ async function main() {
     overlays.push({ path: png, start, end });
   }
 
-  const outPath = path.join(args.outputDir, `${querySlug}_clean_shorts.mp4`);
+  const outPath = path.join(args.outputDir, `${outputSlug}_clean_shorts.mp4`);
   console.log("Step 2/2: Rendering vertical clean short...");
   runFfmpegVerticalTimed({
     input: stitched,

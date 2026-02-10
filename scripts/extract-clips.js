@@ -42,6 +42,10 @@ const DEFAULT_SUB_OFFSETS_FILE = path.join(
   "subs",
   "sub-offsets.json",
 );
+const DEFAULT_WORD_LIST_FILE = path.join(
+  "source_content",
+  "all_anime_top_2000.match.first2000.json",
+);
 
 const DEFAULT_VIDEO_EXTS = [".mkv", ".mp4", ".webm", ".mov"];
 
@@ -81,8 +85,9 @@ function parseArgs(argv) {
     printTop: 0,
     pick: null,
     replace: [],
+    matchContains: null,
     decorate: false,
-    wordList: null,
+    wordList: fs.existsSync(DEFAULT_WORD_LIST_FILE) ? DEFAULT_WORD_LIST_FILE : null,
     meaning: null,
     highlightColor: "&H00D6FF&",
     sentenceGapMs: 800,
@@ -233,6 +238,10 @@ function parseArgs(argv) {
         args.replace.push(String(value));
         takeNext();
         break;
+      case "matchContains":
+        args.matchContains = String(value ?? "").trim() || null;
+        takeNext();
+        break;
       case "decorate":
         args.decorate = true;
         break;
@@ -316,6 +325,7 @@ Options:
   --printTop            Print the top N ranked candidates with scores (default: 0)
   --pick                Comma list of ranked candidate indices to use (1-based), e.g. "1,2,7,10"
   --replace             Replace selected slot with ranked candidate index, e.g. "3=11" or "last=14" (repeatable)
+  --matchContains       Keep only matches where matched form contains this text (family filter)
   --decorate            Burn JP+EN subs with furigana/romaji and highlight the query
   --wordList            JSON list with fields {word, reading, romaji, meaning} for header/meaning lookup
   --meaning             Override meaning text in header and EN highlight
@@ -751,6 +761,7 @@ function toCandidateRecord(item) {
     videoFile: item.videoFile ?? null,
     clipStartMs: item.clipStartMs,
     clipEndMs: item.clipEndMs,
+    matchText: item.matchText || "",
     matchStartMs: item.matchStartMs,
     matchEndMs: item.matchEndMs,
     sentenceText: item.sentenceText,
@@ -977,10 +988,98 @@ function joinRomajiTokens(tokens, romajiTokens) {
   return out.join(" ");
 }
 
+function compactTextNoSpaces(text) {
+  return String(text || "").replace(/\s+/g, "");
+}
+
+function buildTokenSpansBySurface(tokens) {
+  let cursor = 0;
+  return tokens.map((t) => {
+    const surface = String(t?.surface_form || "");
+    const start = cursor;
+    const end = start + surface.length;
+    cursor = end;
+    return { start, end };
+  });
+}
+
+function collectTextRanges(text, terms) {
+  const source = compactTextNoSpaces(text);
+  const ranges = [];
+  for (const raw of terms || []) {
+    const needle = compactTextNoSpaces(raw);
+    if (!needle) continue;
+    let from = 0;
+    while (from < source.length) {
+      const idx = source.indexOf(needle, from);
+      if (idx < 0) break;
+      ranges.push({ start: idx, end: idx + needle.length });
+      from = idx + Math.max(1, needle.length);
+    }
+  }
+  return ranges;
+}
+
+function tokenSpanHitsAnyRange(span, ranges) {
+  if (!span || !Array.isArray(ranges) || ranges.length === 0) return false;
+  return ranges.some((r) => span.start < r.end && span.end > r.start);
+}
+
 function normalizeMeaning(meaning) {
   if (!meaning) return "";
   const first = meaning.split(/[;,.]/)[0];
   return first.trim();
+}
+
+function normalizeMatchArray(values) {
+  if (!Array.isArray(values)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of values) {
+    const v = String(raw ?? "").trim();
+    if (!v) continue;
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+function buildQueryMatcher(query, wordEntry) {
+  const canonical = String(query ?? "").trim();
+  const fromWordList = wordEntry?.match || {};
+  const forms = normalizeMatchArray([canonical, ...(fromWordList.forms || [])]);
+  const exclude = normalizeMatchArray(fromWordList.exclude || []);
+  return {
+    query: canonical,
+    forms,
+    exclude,
+  };
+}
+
+function findMatchInText(text, matcher) {
+  const source = String(text || "");
+  if (!source) return null;
+
+  for (const blocked of matcher.exclude) {
+    if (blocked && source.includes(blocked)) return null;
+  }
+
+  const matched = [];
+  for (const form of matcher.forms) {
+    if (!form) continue;
+    const idx = source.indexOf(form);
+    if (idx < 0) continue;
+    matched.push({ matchText: form, index: idx, length: Array.from(form).length });
+  }
+  if (matched.length === 0) return null;
+
+  const queryLen = Math.max(1, Array.from(matcher.query || "").length);
+  const compactLimit = Math.max(4, queryLen + 4);
+  const compact = matched.filter((x) => x.length <= compactLimit);
+  const pool = compact.length > 0 ? compact : matched;
+  pool.sort((a, b) => b.length - a.length || a.index - b.index);
+  return { matchText: pool[0].matchText, index: pool[0].index };
 }
 
 function msToAssTime(ms) {
@@ -1892,6 +1991,26 @@ async function main() {
     args.enSubsDir = null;
   }
 
+  let wordListEntries = null;
+  if (args.wordList) {
+    if (fs.existsSync(args.wordList)) {
+      const parsed = JSON.parse(fs.readFileSync(args.wordList, "utf8"));
+      if (Array.isArray(parsed)) wordListEntries = parsed;
+      else if (args.verbose) {
+        console.log(`Ignoring --wordList (not an array): ${args.wordList}`);
+      }
+    } else if (args.verbose) {
+      console.log(`Ignoring --wordList (file not found): ${args.wordList}`);
+    }
+  }
+  const queryWordEntry = wordListEntries?.find((x) => x?.word === args.query) ?? null;
+  const queryMatcher = buildQueryMatcher(args.query, queryWordEntry);
+  if (args.verbose) {
+    console.log(
+      `Query matcher forms=${queryMatcher.forms.length} exclude=${queryMatcher.exclude.length}`,
+    );
+  }
+
   const subFiles = args.subFile
     ? [args.subFile]
     : listSubtitleFiles(args.subsDir);
@@ -1927,7 +2046,10 @@ async function main() {
 
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
-      if (!it.text.includes(args.query)) continue;
+      const matchInfo = findMatchInText(it.text, queryMatcher);
+      if (!matchInfo) continue;
+      const matchText = matchInfo.matchText;
+      if (args.matchContains && !matchText.includes(args.matchContains)) continue;
 
       const win =
         args.mode === "sentence"
@@ -1938,7 +2060,7 @@ async function main() {
 
       const estimated = estimateMatchTimeInLine({
         text: it.text,
-        query: args.query,
+        query: matchText,
         startMs: it.startMs,
         endMs: it.endMs,
       });
@@ -2009,6 +2131,7 @@ async function main() {
         videoFile,
         clipStartMs,
         clipEndMs,
+        matchText,
         matchStartMs: estimated.matchStartMs,
         matchEndMs: estimated.matchEndMs,
         sentenceText,
@@ -2059,6 +2182,7 @@ async function main() {
           shuffle: args.shuffle,
           shuffleSeed: shuffleSeedUsed,
           shuffleTop: args.shuffleTop,
+          matchContains: args.matchContains,
           mode: args.mode,
           limit: args.limit,
         },
@@ -2118,6 +2242,7 @@ async function main() {
         shuffle: args.shuffle,
         shuffleSeed: shuffleSeedUsed,
         shuffleTop: args.shuffleTop,
+        matchContains: args.matchContains,
         mode: args.mode,
         limit: args.limit,
       },
@@ -2170,6 +2295,7 @@ async function main() {
     console.log(`  video:  ${c.videoFile ?? "(missing: provide --video or --videosDir)"}`);
     console.log(`  range:  ${msToFfmpegTime(c.clipStartMs)} -> ${msToFfmpegTime(c.clipEndMs)}`);
     console.log(`  match:  ${msToFfmpegTime(c.matchStartMs)} -> ${msToFfmpegTime(c.matchEndMs)}`);
+    console.log(`  form:   ${c.matchText ?? args.query}`);
     console.log(`  text:   ${c.sentenceText}`);
     console.log(`  out:    ${c.output}`);
   }
@@ -2205,38 +2331,67 @@ async function main() {
     const logoDataUri = loadPngDataUri(path.resolve("source_content", "logo.png"));
     const qrDataUri = await buildQrDataUri("http://bundai.app/", 220);
 
-    let meaning = args.meaning ?? "";
-    if (args.wordList && !meaning) {
-      const list = JSON.parse(fs.readFileSync(args.wordList, "utf8"));
-      const found = list.find((x) => x.word === args.query);
-      if (found?.meaning) meaning = found.meaning;
-    }
+    const headerWord = args.matchContains || args.query;
+    const headerWordEntry =
+      wordListEntries?.find((x) => x?.word === headerWord) ?? queryWordEntry;
+    const isFamilyMode = Boolean(args.matchContains && args.matchContains !== args.query);
+    let meaning =
+      args.meaning ??
+      headerWordEntry?.meaning ??
+      (!isFamilyMode ? queryWordEntry?.meaning : "") ??
+      "";
     const meaningShort = normalizeMeaning(meaning);
 
-    const queryReadingParts = tokenizeReading(tokenizer, args.query);
-    const queryReading = toHiragana(queryReadingParts.join(""));
-    const queryRomaji = toRomaji(queryReading);
+    const headerReadingParts = tokenizeReading(tokenizer, headerWord);
+    const headerReading = toHiragana(headerReadingParts.join(""));
+    const headerRomaji = toRomaji(headerReading);
+    const queryFormsSet = new Set(queryMatcher.forms);
     const highlightHex = "#ffd900";
     const headerKanjiColor = "#ffd900";
 
     for (const c of manifest) {
-      const jpText = c.sentenceText;
+      const jpText = compactTextNoSpaces(c.sentenceText);
       const enText = c.enText ?? "";
+      const clipMatch = c.matchText || args.query;
+      const clipReading = toHiragana(tokenizeReading(tokenizer, clipMatch).join(""));
+      const clipRomaji = toRomaji(clipReading);
 
       const tokens = tokenizer.tokenize(jpText);
-      const jpTokens = tokens.map((t) => {
+      const tokenSpans = buildTokenSpansBySurface(tokens);
+      const tokenMatchRanges = collectTextRanges(jpText, [clipMatch, args.query]);
+      const hasRangeHighlight = tokenMatchRanges.length > 0;
+
+      const jpTokens = tokens.map((t, tokenIdx) => {
         const surface = t.surface_form || "";
-        const highlight = surface.includes(args.query);
+        const base = t.basic_form && t.basic_form !== "*" ? t.basic_form : "";
+        const fallbackHit =
+          (clipMatch && surface.includes(clipMatch)) ||
+          (args.query && surface.includes(args.query)) ||
+          queryFormsSet.has(surface) ||
+          (base && queryFormsSet.has(base));
+        const spanHit = tokenSpanHitsAnyRange(tokenSpans[tokenIdx], tokenMatchRanges);
+        const highlight = hasRangeHighlight ? spanHit : fallbackHit;
         return {
           surface,
           color: highlight ? highlightHex : "#ffffff",
         };
       });
-      const furiTokens = tokens.map((t) => {
+      const furiTokens = tokens.map((t, tokenIdx) => {
         const surface = t.surface_form || "";
         const reading = toHiragana(t.reading || surface || "");
+        const base = t.basic_form && t.basic_form !== "*" ? t.basic_form : "";
         const hasKanji = Array.from(surface).some(isKanjiChar);
-        const highlight = hasKanji && reading.includes(queryReading);
+        const fallbackSurfaceHit =
+          (clipMatch && surface.includes(clipMatch)) ||
+          (args.query && surface.includes(args.query)) ||
+          queryFormsSet.has(surface) ||
+          (base && queryFormsSet.has(base));
+        const spanHit = tokenSpanHitsAnyRange(tokenSpans[tokenIdx], tokenMatchRanges);
+        const surfaceHit = hasRangeHighlight ? spanHit : fallbackSurfaceHit;
+        const readingHit =
+          (clipReading && reading.includes(clipReading)) ||
+          (headerReading && reading.includes(headerReading));
+        const highlight = hasKanji && (surfaceHit || (!hasRangeHighlight && readingHit));
         return {
           surface,
           text: hasKanji ? reading : "",
@@ -2249,7 +2404,7 @@ async function main() {
       const romajiText = joinRomajiTokens(tokens, romajiTokens);
       const romajiLine = svgHighlighted(
         romajiText,
-        queryRomaji,
+        clipRomaji || headerRomaji,
         highlightHex,
       );
       const enHighlighted = meaningShort
@@ -2257,8 +2412,8 @@ async function main() {
         : svgEscape(enText);
 
       const headerLines = [
-        { text: queryReading },
-        { text: args.query, color: headerKanjiColor, bg: true },
+        { text: headerReading },
+        { text: headerWord, color: headerKanjiColor, bg: true },
         meaningShort ? { text: meaningShort } : null,
       ].filter(Boolean);
 

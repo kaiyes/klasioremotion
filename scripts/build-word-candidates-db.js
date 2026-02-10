@@ -6,7 +6,10 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
-const DEFAULT_WORDS_FILE = path.join("source_content", "all_anime_top_2000.json");
+const DEFAULT_WORDS_FILE = path.join(
+  "source_content",
+  "all_anime_top_2000.match.first2000.json",
+);
 const DEFAULT_VIDEOS_DIR = path.join("source_content", "shingeki_no_kyojin", "videos");
 const DEFAULT_JP_SUBS_DIR = path.join(
   "source_content",
@@ -276,6 +279,8 @@ function runExtractClips(word, args, tmpOutPath) {
     "scripts/extract-clips.js",
     "--query",
     word,
+    "--wordList",
+    args.wordsFile,
     "--subsDir",
     args.subsDir,
     "--videosDir",

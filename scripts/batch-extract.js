@@ -5,7 +5,7 @@
  *
  * Example:
  *   node scripts/batch-extract.js --count 10 \
- *     --wordsFile source_content/all_anime_top_2000.json \
+ *     --wordsFile source_content/all_anime_top_2000.match.first2000.json \
  *     --subsDir source_content/shingeki_no_kyojin/subs/japanese \
  *     --videosDir source_content/shingeki_no_kyojin/videos \
  *     --limit 5 --concat --flatOut --concatOnly
@@ -18,7 +18,7 @@ const DEFAULT_VIDEOS_DIR = path.join("source_content", "shingeki_no_kyojin", "vi
 
 function parseArgs(argv) {
   const args = {
-    wordsFile: "source_content/all_anime_top_2000.json",
+    wordsFile: "source_content/all_anime_top_2000.match.first2000.json",
     count: 10,
     subsDir: null,
     videosDir: fs.existsSync(DEFAULT_VIDEOS_DIR) ? DEFAULT_VIDEOS_DIR : null,
@@ -137,7 +137,7 @@ function printHelpAndExit(code) {
   const msg = `
 Usage:
   node scripts/batch-extract.js --count 10 \\
-    --wordsFile source_content/all_anime_top_2000.json \\
+    --wordsFile source_content/all_anime_top_2000.match.first2000.json \\
     --subsDir source_content/shingeki_no_kyojin/subs/japanese \\
     --videosDir source_content/shingeki_no_kyojin/videos \\
     --limit 5 --concat --flatOut --concatOnly

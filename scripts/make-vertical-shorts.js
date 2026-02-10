@@ -12,7 +12,7 @@ function parseArgs(argv) {
     inputDir: "out/clips",
     input: null,
     outputDir: "out/shorts",
-    wordList: "source_content/all_anime_top_2000.json",
+    wordList: "source_content/all_anime_top_2000.match.first2000.json",
     width: 1080,
     height: 1920,
     videoTop: 760,
