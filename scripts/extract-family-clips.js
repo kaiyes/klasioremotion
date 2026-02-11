@@ -26,6 +26,9 @@ function parseArgs(argv) {
     topFamilies: 30,
     mode: "line",
     rank: true,
+    shuffle: false,
+    shuffleSeed: null,
+    shuffleTop: 0,
     dryRun: false,
     shorts: true,
     printTop: 0,
@@ -118,6 +121,17 @@ function parseArgs(argv) {
       case "noRank":
         args.rank = false;
         break;
+      case "shuffle":
+        args.shuffle = true;
+        break;
+      case "shuffleSeed":
+        args.shuffleSeed = Number(v);
+        takeNext();
+        break;
+      case "shuffleTop":
+        args.shuffleTop = Number(v);
+        takeNext();
+        break;
       case "subsDir":
         args.subsDir = String(v || "").trim();
         takeNext();
@@ -209,6 +223,9 @@ Options:
   --decorate              Ask extractor to burn subtitle overlay
   --meaning <text>        Meaning override (used when --decorate is on)
   --rank / --noRank       Ranked candidate pool (default: rank)
+  --shuffle               Shuffle candidate selection (after ranking/dedup)
+  --shuffleSeed <n>       Deterministic seed for shuffle order
+  --shuffleTop <n>        Shuffle only top-N candidates (0 = all)
   --subsDir <dir>         JP subtitle dir
   --enSubsDir <dir>       EN subtitle dir
   --videosDir <dir>       Video dir
@@ -250,6 +267,11 @@ function runExtract({
   if (args.enSubsDir) cli.push("--enSubsDir", args.enSubsDir);
   if (args.videosDir) cli.push("--videosDir", args.videosDir);
   if (args.rank) cli.push("--rank");
+  if (args.shuffle) cli.push("--shuffle");
+  if (Number.isFinite(args.shuffleSeed)) cli.push("--shuffleSeed", String(args.shuffleSeed));
+  if (Number.isFinite(args.shuffleTop) && args.shuffleTop > 0) {
+    cli.push("--shuffleTop", String(args.shuffleTop));
+  }
   if (args.decorate) cli.push("--decorate");
   if (args.printTop > 0) cli.push("--printTop", String(args.printTop));
   if (args.pick) cli.push("--pick", args.pick);
@@ -297,6 +319,11 @@ function runShorts({
   if (args.enSubsDir) cli.push("--enSubsDir", args.enSubsDir);
   if (args.videosDir) cli.push("--videosDir", args.videosDir);
   if (args.rank) cli.push("--rank");
+  if (args.shuffle) cli.push("--shuffle");
+  if (Number.isFinite(args.shuffleSeed)) cli.push("--shuffleSeed", String(args.shuffleSeed));
+  if (Number.isFinite(args.shuffleTop) && args.shuffleTop > 0) {
+    cli.push("--shuffleTop", String(args.shuffleTop));
+  }
   if (family) cli.push("--matchContains", family);
   if (args.printTop > 0) cli.push("--printTop", String(args.printTop));
   if (args.pick) cli.push("--pick", args.pick);

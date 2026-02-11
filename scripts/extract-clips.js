@@ -2353,22 +2353,26 @@ async function main() {
       const jpText = compactTextNoSpaces(c.sentenceText);
       const enText = c.enText ?? "";
       const clipMatch = c.matchText || args.query;
+      const visualHighlightTerm = String(args.matchContains || args.query || "").trim();
       const clipReading = toHiragana(tokenizeReading(tokenizer, clipMatch).join(""));
       const clipRomaji = toRomaji(clipReading);
 
       const tokens = tokenizer.tokenize(jpText);
       const tokenSpans = buildTokenSpansBySurface(tokens);
-      const tokenMatchRanges = collectTextRanges(jpText, [clipMatch, args.query]);
+      // Highlight only the learning target (family/query), not long matched phrases.
+      const tokenMatchRanges = collectTextRanges(jpText, [visualHighlightTerm || args.query]);
       const hasRangeHighlight = tokenMatchRanges.length > 0;
 
       const jpTokens = tokens.map((t, tokenIdx) => {
         const surface = t.surface_form || "";
         const base = t.basic_form && t.basic_form !== "*" ? t.basic_form : "";
         const fallbackHit =
-          (clipMatch && surface.includes(clipMatch)) ||
+          (visualHighlightTerm && surface.includes(visualHighlightTerm)) ||
           (args.query && surface.includes(args.query)) ||
           queryFormsSet.has(surface) ||
-          (base && queryFormsSet.has(base));
+          (base &&
+            (queryFormsSet.has(base) ||
+              (visualHighlightTerm && base.includes(visualHighlightTerm))));
         const spanHit = tokenSpanHitsAnyRange(tokenSpans[tokenIdx], tokenMatchRanges);
         const highlight = hasRangeHighlight ? spanHit : fallbackHit;
         return {
@@ -2382,10 +2386,12 @@ async function main() {
         const base = t.basic_form && t.basic_form !== "*" ? t.basic_form : "";
         const hasKanji = Array.from(surface).some(isKanjiChar);
         const fallbackSurfaceHit =
-          (clipMatch && surface.includes(clipMatch)) ||
+          (visualHighlightTerm && surface.includes(visualHighlightTerm)) ||
           (args.query && surface.includes(args.query)) ||
           queryFormsSet.has(surface) ||
-          (base && queryFormsSet.has(base));
+          (base &&
+            (queryFormsSet.has(base) ||
+              (visualHighlightTerm && base.includes(visualHighlightTerm))));
         const spanHit = tokenSpanHitsAnyRange(tokenSpans[tokenIdx], tokenMatchRanges);
         const surfaceHit = hasRangeHighlight ? spanHit : fallbackSurfaceHit;
         const readingHit =

@@ -1,6 +1,6 @@
 # Summary Of Work
 
-Last updated: `2026-02-09`
+Last updated: `2026-02-10`
 
 ## Resume IDs
 - `snk-furigana-center-romaji-fix-2026-02-06`
@@ -23,6 +23,8 @@ Last updated: `2026-02-09`
 - LLM rerank output:
   - `source_content/shingeki_no_kyojin/subs/word-candidates-llm-top.json`
 - Match-form output (active full file):
+  - `source_content/all_anime_top_2000.match.first2000.json`
+- Active default word list across pipeline commands/scripts:
   - `source_content/all_anime_top_2000.match.first2000.json`
 
 ## What Is Implemented
@@ -47,6 +49,9 @@ Last updated: `2026-02-09`
   - `--candidatesOut` writes `planned`, `pool`, `selected`.
 - Subtitle text sanitizer now strips ASS/HTML styling debris from embedded EN (prevents rendering garbage like `size="78"><i><b>`).
 - Romaji continuation join fix (avoids splits like `arumi n`).
+- Highlight rendering guard:
+  - visual highlight now prioritizes the learning target (`--matchContains` or `--query`) instead of long matched phrase text.
+  - prevents accidental full-line highlight when `match.forms` includes long compounds.
 
 ### 2) Vertical Shorts (`scripts/make-vertical-shorts-clean.js`)
 - Clean `1080x1920` output with:
@@ -69,6 +74,8 @@ Last updated: `2026-02-09`
   - `out/shorts_work`
   - `out/shorts`
   - disable with `--keepOutputs`
+- Added `--help` / `-h` usage output for `vertical-shorts-clean`.
+- Same `--help` / `-h` support added to `scripts/make-vertical-shorts.js`.
 
 ### 3) Embedded EN Extraction
 Script: `scripts/extract-embedded-english-subs.js`
@@ -126,6 +133,7 @@ Script: `scripts/generate-word-match-forms.js`
   - common literal compounds (e.g. `前` -> `お前`, `目の前`, `前に`, `名前`)
 - Writes an updated words JSON; active output:
   - `source_content/all_anime_top_2000.match.first2000.json`
+- Incremental generation completed from 100 -> 2000 in +100 steps and validated.
 
 ## NPM Commands Added / Updated
 - `extract-embedded-english-subs`
@@ -141,6 +149,7 @@ Script: `scripts/generate-word-match-forms.js`
 - `rerank-word-candidates:ollama:aot`
 - `extract-clips:aot` (uses `english_embedded`)
 - `shorts-clean:aot` (uses `english_embedded`)
+- `vertical-shorts` / `vertical-shorts-clean` now support `--help`
 
 ## Command Cheat Sheet
 
@@ -154,7 +163,7 @@ npm run -s extract-embedded-english-subs -- --overwrite
 npm run -s build-word-candidates-db:aot -- --count 100 --mode line --maxPerWord 50
 ```
 
-### Generate `match.forms` for first 100 words
+### Refresh `match.forms` for full 2000 list
 ```bash
 npm run -s generate-word-match-forms:aot
 ```
@@ -179,6 +188,14 @@ npm run -s rerank-word-candidates:ollama:aot -- --model "llama3.2:latest" --coun
 npm run -s shorts-clean:aot -- --query 言う --limit 7
 ```
 
+### Show all flags for main render commands
+```bash
+npm run -s vertical-shorts-clean -- --help
+npm run -s vertical-shorts -- --help
+npm run -s extract-clips -- --help
+npm run -s extract-family-clips -- --help
+```
+
 ### Generate with shuffle (seeded)
 ```bash
 npm run -s shorts-clean:aot -- --query 言う --limit 7 --shuffle --shuffleSeed 42 --shuffleTop 30
@@ -198,9 +215,37 @@ npm run -s align-episode-subs -- --episode s4e30 --enSubsDir source_content/shin
 
 ## Known Gaps / Risks
 - `build-word-candidates-db.js` is still heavy/serial for very large runs (`2000` words can take long).
-- Candidate highlight for JP can miss phrases split across tokenizer boundaries (example: some conjugations like `知らない` split into multiple tokens).
+- EN mapping can still bleed across neighboring cues in some cases (strict one-JP-to-one-EN mapping not yet default).
 - Auto-generated `match.forms` can still contain some noisy short phrase fragments; file is intended to be editable and can be refined incrementally.
 - LLM rerank quality depends on model output discipline; script now rejects weak/trivial JSON by default and falls back to heuristic when needed.
+
+## Next Phase Plan (Agreed)
+1. Strict JP->EN mapping as default in `scripts/extract-clips.js`.
+- One JP cue maps to exactly one EN cue.
+- No EN concatenation.
+- Use overlap + midpoint distance gates.
+- If no valid EN cue, output blank EN (or later fallback translation from exact JP line only).
+
+2. Replace score-first selection with quality gates.
+- Reject candidates that start/end mid-utterance using speech-boundary checks from audio.
+- Reject candidates with query too close to clip edges.
+- Only pass candidates meeting completeness checks.
+
+3. Add autonomous evaluator loop with persistence.
+- Post-render checks:
+  - JP shown fully
+  - EN corresponds to displayed JP
+  - highlight coverage correct
+- Save results to a clip-quality DB and automatically retry better candidates.
+
+4. Simplify user workflow.
+- Keep one default generation path/command.
+- Move complexity into internal pipeline logic.
+- Reduce optional flags in everyday use.
+
+## Repo Direction
+- Current pipeline is mainly subtitle/audio/ffmpeg orchestration with optional Remotion overlays.
+- Recommended next step: split this pipeline into a dedicated repo (or dedicated package folder) so it does not conflict with other workflows in this repo.
 
 ## Git / Asset Notes
 - `.gitignore` currently ignores:

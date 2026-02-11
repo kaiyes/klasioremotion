@@ -23,6 +23,9 @@ function parseArgs(argv) {
 
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
+    if (a === "--help" || a === "-h") {
+      printHelpAndExit(0);
+    }
     if (!a.startsWith("--")) continue;
     const [key, maybeValue] = a.slice(2).split("=");
     const value = maybeValue ?? argv[i + 1];
@@ -74,6 +77,29 @@ function parseArgs(argv) {
     }
   }
   return args;
+}
+
+function printHelpAndExit(code) {
+  console.log(
+    `
+Usage:
+  node scripts/make-vertical-shorts.js [options]
+
+Options:
+  --inputDir <dir>      Directory of stitched clips (default: out/clips)
+  --input <file>        Render only one input clip
+  --outputDir <dir>     Output shorts directory (default: out/shorts)
+  --wordList <file>     Word metadata JSON (default: first2000 match file)
+  --width <n>           Output width (default: 1080)
+  --height <n>          Output height (default: 1920)
+  --videoTop <n>        Y offset for video placement (default: 760)
+  --limit <n>           Max files to render (0 = all)
+  --dryRun              Print plan only
+  --verbose             Verbose logs
+  --help, -h            Show this help
+`.trim() + "\n",
+  );
+  process.exit(code);
 }
 
 function ensureDir(p) {

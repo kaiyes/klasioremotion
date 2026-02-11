@@ -62,6 +62,9 @@ function parseArgs(argv) {
 
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
+    if (a === "--help" || a === "-h") {
+      printHelpAndExit(0);
+    }
     if (!a.startsWith("--")) continue;
     const [k, maybeV] = a.slice(2).split("=");
     const v = maybeV ?? argv[i + 1];
@@ -194,6 +197,47 @@ function parseArgs(argv) {
     }
   }
   return args;
+}
+
+function printHelpAndExit(code) {
+  console.log(
+    `
+Usage:
+  node scripts/make-vertical-shorts-clean.js --query <word> --subsDir <dir> --videosDir <dir> [options]
+
+Options:
+  --query <text>             Target word / query (required)
+  --matchContains <text>     Family form filter, e.g. お前ら
+  --subsDir <dir>            JP subtitle directory (required)
+  --enSubsDir <dir>          EN subtitle directory
+  --videosDir <dir>          Video directory (required)
+  --wordList <file>          Word metadata JSON (default: first2000 match file)
+  --outDir <dir>             Work output dir (default: out/shorts_work)
+  --outputDir <dir>          Final shorts dir (default: out/shorts)
+  --limit <n>                Number of clips (default: 5)
+  --mode <line|sentence>     Match mode (default: line)
+  --rank                     Rank candidates (default: on)
+  --shuffle                  Shuffle selected candidates
+  --shuffleSeed <n>          Deterministic seed for shuffle
+  --shuffleTop <n>           Shuffle only top-N ranked candidates
+  --printTop <n>             Print top candidate list
+  --pick <list>              Pick ranked indices, e.g. "1,2,7,9,11"
+  --replace <a=b>            Replace picked slot with ranked index, e.g. "3=12"
+  --meaning <text>           Override meaning shown on top card
+  --familyMeaningsFile <f>   Saved family->meaning map (default: source_content/family-meanings.json)
+  --prePadMs <n>             Passed to extractor (default: 1500)
+  --postPadMs <n>            Passed to extractor (default: 1500)
+  --maxClipMs <n>            Passed to extractor (default: 2500)
+  --longPolicy <skip|shrink> Passed to extractor (default: shrink)
+  --tailRepeat <n>           End card repeat count (default: 3)
+  --brandQrUrl <url>         Branding QR URL (default: http://bundai.app/)
+  --keepOutputs              Keep old out dirs (default: clean on each run)
+  --cleanOutputs             Force clean outputs before run
+  --verbose                  Verbose logs
+  --help, -h                 Show this help
+`.trim() + "\n",
+  );
+  process.exit(code);
 }
 
 function ensureDir(p) {
@@ -824,19 +868,23 @@ async function main() {
 
     const jpText = compactTextNoSpaces(c.sentenceText);
     const clipMatch = String(c.matchText || args.matchContains || args.query || "");
+    const visualHighlightTerm = String(displayWord || args.query || "").trim();
     const tokens = tokenizer.tokenize(jpText);
     const tokenSpans = buildTokenSpansBySurface(tokens);
-    const tokenMatchRanges = collectTextRanges(jpText, [clipMatch, displayWord, args.query]);
+    // Use the intended learning target for visual highlight, not the matched phrase.
+    // Matched phrases from match.forms can be long and would over-highlight whole lines.
+    const tokenMatchRanges = collectTextRanges(jpText, [visualHighlightTerm]);
     const hasRangeHighlight = tokenMatchRanges.length > 0;
 
     const jpTokens = tokens.map((x, tokenIdx) => {
       const surface = x.surface_form || "";
       const base = x.basic_form && x.basic_form !== "*" ? x.basic_form : "";
       const fallbackHit =
-        (clipMatch && surface.includes(clipMatch)) ||
-        (displayWord && surface.includes(displayWord)) ||
+        (visualHighlightTerm && surface.includes(visualHighlightTerm)) ||
         (args.query && surface.includes(args.query)) ||
-        (base && ((clipMatch && base.includes(clipMatch)) || base.includes(args.query)));
+        (base &&
+          ((visualHighlightTerm && base.includes(visualHighlightTerm)) ||
+            base.includes(args.query)));
       const spanHit = tokenSpanHitsAnyRange(tokenSpans[tokenIdx], tokenMatchRanges);
       const highlight = hasRangeHighlight ? spanHit : fallbackHit;
       return {
@@ -850,8 +898,8 @@ async function main() {
       const hasKanji = Array.from(surface).some(isKanjiChar);
       const spanHit = tokenSpanHitsAnyRange(tokenSpans[tokenIdx], tokenMatchRanges);
       const fallbackSurfaceHit =
-        (clipMatch && surface.includes(clipMatch)) ||
-        (displayWord && surface.includes(displayWord));
+        (visualHighlightTerm && surface.includes(visualHighlightTerm)) ||
+        (args.query && surface.includes(args.query));
       const surfaceHit = hasRangeHighlight ? spanHit : fallbackSurfaceHit;
       return {
         surface,
