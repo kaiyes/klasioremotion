@@ -1,6 +1,6 @@
 # Summary Of Work
 
-Last updated: `2026-02-10`
+Last updated: `2026-02-11`
 
 ## Resume IDs
 - `snk-furigana-center-romaji-fix-2026-02-06`
@@ -135,6 +135,19 @@ Script: `scripts/generate-word-match-forms.js`
   - `source_content/all_anime_top_2000.match.first2000.json`
 - Incremental generation completed from 100 -> 2000 in +100 steps and validated.
 
+### 8) Fully-Automated Word Curation Pipeline (Current Default)
+Scripts:
+- `scripts/word-pipeline.js` (high-level entry point)
+- `scripts/auto-curate-word-shorts.js` (orchestration)
+- `scripts/rerank-word-candidates-ollama.js` (LLM ranking + gates)
+
+What is now preferred:
+- Use short `npm` aliases (`wp:*`) for word/range/all workflows.
+- Keep outputs under:
+  - `out/new-pipeline/fast`
+  - `out/new-pipeline/whisper`
+- Use `WORD_PIPELINE_COMMANDS.md` as the command source of truth.
+
 ## NPM Commands Added / Updated
 - `extract-embedded-english-subs`
 - `generate-word-match-forms`
@@ -147,6 +160,20 @@ Script: `scripts/generate-word-match-forms.js`
 - `build-word-candidates-db:aot`
 - `rerank-word-candidates:ollama`
 - `rerank-word-candidates:ollama:aot`
+- `auto-curate-word-shorts`
+- `auto-curate-word-shorts:aot`
+- `word-pipeline`
+- `wp:one:fast`
+- `wp:rank:10:fast`
+- `wp:render:10:fast`
+- `wp:rank:100:fast`
+- `wp:render:100:fast`
+- `wp:rank:10:whisper`
+- `wp:render:10:whisper`
+- `wp:rank:fast`
+- `wp:render:fast`
+- `wp:rank:whisper`
+- `wp:render:whisper`
 - `extract-clips:aot` (uses `english_embedded`)
 - `shorts-clean:aot` (uses `english_embedded`)
 - `vertical-shorts` / `vertical-shorts-clean` now support `--help`
@@ -178,9 +205,16 @@ npm run -s family-list:aot -- --query 前
 npm run -s extract-family-clips:aot -- --query 前 --family お前ら --limit 5
 ```
 
-### Run Ollama rerank (top 5 per word), resumable
+### Word pipeline commands (current)
+See: `WORD_PIPELINE_COMMANDS.md`
+
+Quick starters:
 ```bash
-npm run -s rerank-word-candidates:ollama:aot -- --model "llama3.2:latest" --count 100 --topK 5 --maxCandidates 50 --resume
+npm run -s wp:one:fast -- 悪い
+npm run -s wp:rank:10:fast
+npm run -s wp:render:10:fast
+npm run -s wp:rank:fast -- 20-30
+npm run -s wp:render:fast -- 20-30
 ```
 
 ### Generate one clean short

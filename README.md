@@ -50,6 +50,19 @@ npm run auto-short:render
 
 Output file: `out/auto-short/auto-short.mp4`
 
+## Automated Word-Clip Curation
+
+Use the short command aliases documented in:
+- `WORD_PIPELINE_COMMANDS.md`
+
+Quick examples:
+
+```console
+npm run -s wp:one:fast -- 悪い
+npm run -s wp:rank:10:fast
+npm run -s wp:render:10:fast
+```
+
 ### Optional: Local LLM refinement
 
 The default planner is heuristic-only.  

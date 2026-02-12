@@ -77,6 +77,7 @@ function parseArgs(argv) {
     subOffsetMs: 0,
     subOffsetsFile: fs.existsSync(DEFAULT_SUB_OFFSETS_FILE) ? DEFAULT_SUB_OFFSETS_FILE : null,
     enSubsDir: fs.existsSync(DEFAULT_EN_SUBS_DIR) ? DEFAULT_EN_SUBS_DIR : null,
+    enLinePolicy: "best",
     rank: false,
     shuffle: false,
     shuffleSeed: null,
@@ -208,6 +209,10 @@ function parseArgs(argv) {
         args.enSubsDir = value;
         takeNext();
         break;
+      case "enLinePolicy":
+        args.enLinePolicy = String(value || "").trim().toLowerCase();
+        takeNext();
+        break;
       case "rank":
         args.rank = true;
         break;
@@ -317,6 +322,7 @@ Options:
   --subOffsetsFile      JSON map of per-episode/per-season offsets (default: ${DEFAULT_SUB_OFFSETS_FILE} if present)
   --noSubOffsetsFile    Disable reading offsets file
   --enSubsDir           English subtitle directory (default: ${DEFAULT_EN_SUBS_DIR} if present)
+  --enLinePolicy        EN cue selection policy: "best" (default), "nearest", or "merge"
   --rank                Rank candidates and pick the best scores instead of first matches
   --shuffle             Shuffle candidate selection order (after ranking/dedup)
   --shuffleSeed         Deterministic seed for --shuffle
@@ -869,7 +875,19 @@ function scoreCandidate({
   if (/[➡→]/.test(jpText)) score -= 5;
   if (/…|\.{3}|―|—/.test(jpText)) score -= 4;
 
-  if (enText && enText.trim().length > 0) score += 8;
+  const enClean = normalizeEnglishText(enText);
+  if (enClean.length > 0) score += 8;
+  else score -= 6;
+
+  if (enClean.length > 0 && durationMs > 0) {
+    const cps = enClean.length / (durationMs / 1000);
+    // Extremely high chars/sec usually means neighboring EN cues leaked into this clip.
+    if (cps > 24) score -= 8;
+    else if (cps > 20) score -= 4;
+  }
+
+  if (/^\s*[-–—]/.test(enClean)) score -= 2;
+  if (/^\s*\[[^\]]+\]/.test(enClean)) score -= 2;
 
   return Math.round(score * 10) / 10;
 }
@@ -880,20 +898,52 @@ function overlapMs(aStart, aEnd, bStart, bEnd) {
   return Math.max(0, e - s);
 }
 
-function findEnglishForTime(enItems, startMs, endMs) {
+function normalizeEnglishText(text) {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+function findEnglishForTime(enItems, startMs, endMs, opts = {}) {
   if (!enItems || enItems.length === 0) return "";
+  const policy = String(opts.policy || "best").toLowerCase();
+  const focusStartMs =
+    Number.isFinite(Number(opts.focusStartMs)) ? Number(opts.focusStartMs) : startMs;
+  const focusEndMs =
+    Number.isFinite(Number(opts.focusEndMs)) ? Number(opts.focusEndMs) : endMs;
+  const focusMidMs = (focusStartMs + focusEndMs) / 2;
+
+  // "merge" keeps legacy behavior: all overlapping EN cues joined.
+  if (policy === "merge") {
+    const overlaps = [];
+    for (const it of enItems) {
+      const ov = overlapMs(startMs, endMs, it.startMs, it.endMs);
+      if (ov > 0) overlaps.push({ item: it, ov });
+    }
+    if (overlaps.length > 0) {
+      overlaps.sort((a, b) => b.ov - a.ov);
+      const texts = overlaps.map((o) => normalizeEnglishText(o.item.text));
+      return Array.from(new Set(texts)).join(" ");
+    }
+  }
+
+  // Default path ("best"): choose one EN cue only, using overlap + focus proximity.
   const overlaps = [];
   for (const it of enItems) {
     const ov = overlapMs(startMs, endMs, it.startMs, it.endMs);
-    if (ov > 0) overlaps.push({ item: it, ov });
+    if (ov <= 0) continue;
+    const overlapRatio = ov / Math.max(1, it.endMs - it.startMs);
+    const itMid = (it.startMs + it.endMs) / 2;
+    const dist = Math.abs(itMid - focusMidMs);
+    overlaps.push({
+      item: it,
+      score: overlapRatio * 100 - dist / 80,
+    });
   }
   if (overlaps.length > 0) {
-    overlaps.sort((a, b) => b.ov - a.ov);
-    const texts = overlaps.map((o) => o.item.text.replace(/\s+/g, " ").trim());
-    return Array.from(new Set(texts)).join(" ");
+    overlaps.sort((a, b) => b.score - a.score);
+    return normalizeEnglishText(overlaps[0].item.text);
   }
 
-  const mid = (startMs + endMs) / 2;
+  const mid = policy === "nearest" ? focusMidMs : (startMs + endMs) / 2;
   let best = null;
   let bestDist = Infinity;
   for (const it of enItems) {
@@ -905,7 +955,7 @@ function findEnglishForTime(enItems, startMs, endMs) {
     }
   }
   if (best && bestDist <= 700) {
-    return best.text.replace(/\s+/g, " ").trim();
+    return normalizeEnglishText(best.text);
   }
   return "";
 }
@@ -1970,6 +2020,10 @@ async function main() {
     console.error('--mode must be "line" or "sentence"');
     printHelpAndExit(1);
   }
+  if (!["best", "nearest", "merge"].includes(args.enLinePolicy)) {
+    console.error('--enLinePolicy must be "best", "nearest", or "merge"');
+    printHelpAndExit(1);
+  }
   if (args.concatOnly) {
     args.concat = true;
   }
@@ -2077,11 +2131,11 @@ async function main() {
 
       let clipStartMs =
         args.mode === "line"
-          ? Math.max(0, estimated.matchStartMs - args.prePadMs)
+          ? Math.max(0, it.startMs - args.prePadMs)
           : Math.max(0, startItem.startMs - args.prePadMs);
       let clipEndMs =
         args.mode === "line"
-          ? estimated.matchEndMs + args.postPadMs
+          ? it.endMs + args.postPadMs
           : endItem.endMs + args.postPadMs;
 
       // Enforce the "not longer than 1-2 seconds" preference:
@@ -2114,7 +2168,11 @@ async function main() {
         args.video ?? findVideoForSubs(subFile, args.videosDir, args.videoExts, videoIndex);
 
       const enText = enItems
-        ? findEnglishForTime(enItems, clipStartMs, clipEndMs)
+        ? findEnglishForTime(enItems, clipStartMs, clipEndMs, {
+            policy: args.enLinePolicy,
+            focusStartMs: estimated.matchStartMs,
+            focusEndMs: estimated.matchEndMs,
+          })
         : "";
       const matchCenterDistMs = Math.abs(
         (estimated.matchStartMs + estimated.matchEndMs) / 2 -
@@ -2182,6 +2240,7 @@ async function main() {
           shuffle: args.shuffle,
           shuffleSeed: shuffleSeedUsed,
           shuffleTop: args.shuffleTop,
+          enLinePolicy: args.enLinePolicy,
           matchContains: args.matchContains,
           mode: args.mode,
           limit: args.limit,
@@ -2242,6 +2301,7 @@ async function main() {
         shuffle: args.shuffle,
         shuffleSeed: shuffleSeedUsed,
         shuffleTop: args.shuffleTop,
+        enLinePolicy: args.enLinePolicy,
         matchContains: args.matchContains,
         mode: args.mode,
         limit: args.limit,
