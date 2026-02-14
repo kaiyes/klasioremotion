@@ -41,6 +41,9 @@ const DEFAULTS = {
   },
 };
 
+const PRIMARY_RERANK_FILENAME = "word-candidates-llm-top.qwen2.5-3b.full.json";
+const SAVEFILE_RERANK_BACKUP_FILENAME = "word-candidates-llm-top.qwen2.5-3b.full.backup.json";
+
 function printHelpAndExit(code) {
   console.log(
     `
@@ -498,8 +501,16 @@ function getTargetWordsForScope(args) {
   return [String(args.scope.value || "").trim()].filter(Boolean);
 }
 
+function resolveRerankFile(outRoot) {
+  const primary = path.resolve(outRoot, PRIMARY_RERANK_FILENAME);
+  if (fs.existsSync(primary)) return primary;
+  const saveFileBackup = path.resolve(outRoot, "..", "saveFile", SAVEFILE_RERANK_BACKUP_FILENAME);
+  if (fs.existsSync(saveFileBackup)) return saveFileBackup;
+  return primary;
+}
+
 function preflightRender(args, outRoot) {
-  const rerankFile = path.resolve(outRoot, "word-candidates-llm-top.json");
+  const rerankFile = resolveRerankFile(outRoot);
   if (!fs.existsSync(rerankFile)) {
     throw new Error(
       `Render needs ranked output first. Missing: ${rerankFile}\nRun: npm run -s word-pipeline -- rank --${args.scope.kind === "all" ? "all" : args.scope.kind === "range" ? `range ${args.scope.value.start}-${args.scope.value.end}` : `word ${args.scope.value}`} --${args.profile}`,
@@ -652,7 +663,7 @@ function runShortRenderStage(args, outRoot) {
       createdAt: new Date().toISOString(),
       renderMode: "short",
       wordsFile: path.resolve(args.wordsFile),
-      rerankFile: path.resolve(outRoot, "word-candidates-llm-top.json"),
+      rerankFile: resolveRerankFile(outRoot),
       outputDir,
       profile: args.profile,
       topK: args.topK,
@@ -811,7 +822,8 @@ function main() {
   const args = parseArgs(process.argv);
   const window = resolveWindow(args);
 
-  const outRoot = path.resolve(args.outBase, args.profile);
+  // Single output root to avoid fast/whisper folder split.
+  const outRoot = path.resolve(args.outBase);
 
   const scopeLabel =
     args.scope.kind === "all"
@@ -819,7 +831,7 @@ function main() {
       : args.scope.kind === "range"
         ? `${args.scope.value.start}-${args.scope.value.end}`
         : args.scope.value;
-  console.log(`[word-pipeline] action=${args.action} profile=${args.profile} scope=${scopeLabel}`);
+  console.log(`[word-pipeline] action=${args.action} lane=${args.profile} scope=${scopeLabel}`);
   console.log(
     `[word-pipeline] wordsWindow=${window.fromIndex} +${window.count === 0 ? "all" : window.count} outRoot=${outRoot}`,
   );

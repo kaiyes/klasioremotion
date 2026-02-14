@@ -1,8 +1,7 @@
 # Word Pipeline Commands
 
 Primary output roots:
-- `out/shorts/fast`
-- `out/shorts/whisper`
+- `out/shorts`
 
 ## One Word
 
@@ -39,7 +38,7 @@ npm run -s word:pick -- 悪い 9,14,18,20,1 "manual final"
 ```
 
 Replacement log file:
-- `out/shorts/fast/curation-log.jsonl`
+- `out/shorts/curation-log.jsonl`
 
 ## Staged Rollout (Fast)
 

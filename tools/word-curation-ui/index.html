@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Word Curation Board</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Anime Shorts</p>
+        <h1>Word Curation Board</h1>
+        <p class="subtitle">Select words, render shorts, swap clips, add reasons.</p>
+      </div>
+      <div class="top-actions">
+        <button id="refreshBtn" class="btn">Refresh</button>
+      </div>
+    </header>
+
+    <section class="statusbar card">
+      <div id="statusMsg" class="status">Loading...</div>
+      <div id="queueMeta" class="muted"></div>
+    </section>
+
+    <main class="layout">
+      <aside class="sidebar card">
+        <div class="sidebar-controls">
+          <input id="searchInput" type="search" placeholder="Search word..." />
+          <select id="statusFilter">
+            <option value="all">All statuses</option>
+            <option value="rendered">Rendered</option>
+            <option value="failed">Failed</option>
+            <option value="skipped">Skipped</option>
+            <option value="rank:ok">Rank OK</option>
+            <option value="rank:error">Rank Error</option>
+            <option value="built">Built only</option>
+            <option value="new">New</option>
+          </select>
+        </div>
+        <div class="sidebar-mini">
+          <span id="wordCount" class="muted"></span>
+          <button id="selectVisibleBtn" class="btn btn-small">Select Visible</button>
+          <button id="clearSelectionBtn" class="btn btn-small">Clear</button>
+        </div>
+        <section class="range-box">
+          <p class="muted">Range render</p>
+          <div class="range-row">
+            <input id="rangeStartInput" type="number" min="1" step="1" value="20" />
+            <span class="muted">to</span>
+            <input id="rangeEndInput" type="number" min="1" step="1" value="30" />
+          </div>
+          <button id="renderRangeBtn" class="btn btn-small btn-primary">Render Range</button>
+        </section>
+        <p class="muted">Check a word to open it, then use “Render Current Slots”.</p>
+        <ul id="wordList" class="word-list"></ul>
+      </aside>
+
+      <section class="detail">
+        <section class="card">
+          <div class="card-head">
+            <h3>Range Review</h3>
+            <div class="inline">
+              <label class="inline">start
+                <input id="reviewStartInput" type="number" min="1" step="1" value="20" />
+              </label>
+              <label class="inline">count
+                <select id="reviewCountSelect">
+                  <option value="5">5</option>
+                  <option value="10" selected>10</option>
+                </select>
+              </label>
+              <button id="loadReviewBtn" class="btn btn-small">Load</button>
+            </div>
+          </div>
+          <div id="reviewMeta" class="muted">Load 5-10 words to audit all 5 clips per word.</div>
+          <div id="reviewGrid" class="review-grid"></div>
+        </section>
+
+        <div id="emptyState" class="card empty-state">Select one word to curate.</div>
+
+        <div id="wordPanel" class="word-panel" hidden>
+          <section class="card">
+            <div class="word-head">
+              <div>
+                <h2 id="wordTitle"></h2>
+                <p id="wordMeta" class="muted"></p>
+              </div>
+              <div class="word-actions">
+                <button id="regenWordBtn" class="btn">Regenerate Candidates</button>
+                <button id="renderWordBtn" class="btn">Render Current Slots</button>
+                <button id="openOutputBtn" class="btn">Open Output</button>
+                <button id="deleteWordBtn" class="btn btn-danger">Delete Word</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <h3>Final Picks (5 clips)</h3>
+            <div class="slot-selection-toolbar">
+              <span id="slotSelectionInfo" class="muted">No slots selected</span>
+              <div class="slot-selection-actions">
+                <button id="selectAllSlotsBtn" class="btn btn-small">Select All Slots</button>
+                <button id="clearSlotSelectionBtn" class="btn btn-small">Clear Slot Selection</button>
+              </div>
+            </div>
+            <div id="slotRow" class="slot-row"></div>
+            <p class="muted">Check slot boxes, then click a candidate card to apply. Render uses selected slots (3-5), or all 5 if none selected.</p>
+            <div class="toolbar">
+              <button id="resetPicksBtn" class="btn">Reset Picks</button>
+              <button id="applyPickBtn" class="btn btn-primary">Apply Picks + Stitch</button>
+              <button id="applyReplaceBtn" class="btn">Apply Single Replace</button>
+            </div>
+            <div class="command-box">
+              <label>Pick command preview</label>
+              <code id="pickCmd"></code>
+            </div>
+            <div class="command-box">
+              <label>Replace command preview</label>
+              <code id="replaceCmd"></code>
+            </div>
+          </section>
+
+          <section class="card">
+            <h3>Current Output</h3>
+            <p id="outputPath" class="mono"></p>
+            <video id="outputPreview" controls preload="metadata"></video>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <h3>Candidates</h3>
+              <label class="inline">show
+                <input id="candidateLimit" type="number" min="5" max="200" step="5" value="40" />
+              </label>
+            </div>
+            <div id="candidateGrid" class="candidate-grid"></div>
+          </section>
+
+          <section class="card">
+            <h3>History / Notes</h3>
+            <div id="notesList" class="notes-list"></div>
+          </section>
+        </div>
+
+        <section class="card">
+          <h3>Job Console</h3>
+          <div id="jobMeta" class="muted"></div>
+          <pre id="jobLog" class="job-log"></pre>
+        </section>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

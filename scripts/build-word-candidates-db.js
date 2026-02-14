@@ -62,6 +62,7 @@ function parseArgs(argv) {
     maxPerWord: 0,
     printEvery: 25,
     continueOnError: true,
+    resume: true,
     keepTmp: false,
     verbose: false,
   };
@@ -139,6 +140,12 @@ function parseArgs(argv) {
       case "no-continueOnError":
         args.continueOnError = false;
         break;
+      case "resume":
+        args.resume = true;
+        break;
+      case "no-resume":
+        args.resume = false;
+        break;
       case "keepTmp":
         args.keepTmp = true;
         break;
@@ -189,6 +196,7 @@ Options:
   --printEvery <n>          Progress print interval (default: 25)
   --continueOnError         Keep going when a word fails (default: on)
   --no-continueOnError      Stop on first failure
+  --resume / --no-resume    Merge into existing outFile (default: resume)
   --keepTmp                 Keep per-word temp candidate files
   --verbose                 Extra logs
 `.trim() + "\n",
@@ -208,6 +216,70 @@ function writeJson(filePath, value) {
   const abs = path.resolve(filePath);
   ensureDir(path.dirname(abs));
   fs.writeFileSync(abs, JSON.stringify(value, null, 2));
+}
+
+function normalizeDbPayload(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const words = Array.isArray(raw.words) ? raw.words : null;
+  if (!words) return null;
+  const meta = raw.meta && typeof raw.meta === "object" ? raw.meta : {};
+  const summary = raw.summary && typeof raw.summary === "object" ? raw.summary : {};
+  return { meta, summary, words };
+}
+
+function buildWordMap(records) {
+  const map = new Map();
+  for (const rec of records || []) {
+    const word = String(rec?.word || "").trim();
+    if (!word) continue;
+    map.set(word, rec);
+  }
+  return map;
+}
+
+function mergeWordOrder(existingWords, processedWords) {
+  const out = [];
+  const seen = new Set();
+  for (const w of existingWords || []) {
+    const word = String(w || "").trim();
+    if (!word || seen.has(word)) continue;
+    seen.add(word);
+    out.push(word);
+  }
+  for (const w of processedWords || []) {
+    const word = String(w || "").trim();
+    if (!word || seen.has(word)) continue;
+    seen.add(word);
+    out.push(word);
+  }
+  return out;
+}
+
+function recomputeSummary(words) {
+  let okWords = 0;
+  let missingWords = 0;
+  let errorWords = 0;
+  let totalCandidates = 0;
+
+  for (const rec of words || []) {
+    if (!rec || typeof rec !== "object") continue;
+    if (rec.error) errorWords++;
+    else if (rec.missing) missingWords++;
+    else okWords++;
+
+    if (Array.isArray(rec.candidates)) totalCandidates += rec.candidates.length;
+    else if (Number.isFinite(Number(rec.candidateCount))) {
+      totalCandidates += Number(rec.candidateCount);
+    }
+  }
+
+  return {
+    totalWords: Array.isArray(words) ? words.length : 0,
+    okWords,
+    missingWords,
+    errorWords,
+    totalCandidates,
+  };
 }
 
 function hashWord(word) {
@@ -320,9 +392,17 @@ function main() {
   const words = loadWordEntries(args.wordsFile, args.queryField, args.count);
   if (words.length === 0) throw new Error("No words loaded from wordsFile.");
 
+  const nowIso = new Date().toISOString();
+  const existingRaw = args.resume && fs.existsSync(args.outFile) ? readJson(args.outFile) : null;
+  const existing = normalizeDbPayload(existingRaw);
+  const existingWordOrder = existing?.words?.map((rec) => String(rec?.word || "").trim()) || [];
+  const outMap = buildWordMap(existing?.words || []);
+
   const db = {
     meta: {
-      createdAt: new Date().toISOString(),
+      ...(existing?.meta || {}),
+      createdAt: existing?.meta?.createdAt || nowIso,
+      updatedAt: nowIso,
       generator: "build-word-candidates-db.v1",
       wordsFile: path.resolve(args.wordsFile),
       queryField: args.queryField,
@@ -336,8 +416,8 @@ function main() {
       rank: args.rank,
       maxPerWord: args.maxPerWord,
     },
-    summary: {
-      totalWords: words.length,
+    summary: existing?.summary || {
+      totalWords: 0,
       okWords: 0,
       missingWords: 0,
       errorWords: 0,
@@ -359,7 +439,6 @@ function main() {
     let wordRec = null;
 
     if (res.status === 2) {
-      db.summary.missingWords++;
       wordRec = {
         word,
         meta: entry.meta,
@@ -369,7 +448,6 @@ function main() {
         selected: [],
       };
     } else if (res.status !== 0) {
-      db.summary.errorWords++;
       const err = (res.stderr || res.stdout || `exit=${res.status}`).trim();
       wordRec = {
         word,
@@ -380,13 +458,19 @@ function main() {
         selected: [],
       };
       if (!args.continueOnError) {
-        db.words.push(wordRec);
+        outMap.set(word, wordRec);
+        const partialOrder = mergeWordOrder(
+          existingWordOrder,
+          words.map((x) => x.word),
+        );
+        db.words = partialOrder.map((w) => outMap.get(w)).filter(Boolean);
+        db.summary = recomputeSummary(db.words);
         db.meta.processedCount = db.words.length;
+        db.meta.updatedAt = new Date().toISOString();
         writeJson(args.outFile, db);
         throw new Error(`Failed on word "${word}": ${err}`);
       }
     } else {
-      db.summary.okWords++;
       const payload = fs.existsSync(tmpOutPath) ? readJson(tmpOutPath) : {};
       let candidates = Array.isArray(payload.planned)
         ? payload.planned
@@ -397,8 +481,6 @@ function main() {
       const selected = Array.isArray(payload.selected) ? payload.selected : [];
       const normalizedCandidates = candidates.map(normalizeCandidate);
       const normalizedSelected = selected.map(normalizeCandidate);
-      db.summary.totalCandidates += normalizedCandidates.length;
-
       wordRec = {
         word,
         meta: entry.meta,
@@ -412,8 +494,7 @@ function main() {
       };
     }
 
-    db.words.push(wordRec);
-    db.meta.processedCount = db.words.length;
+    outMap.set(word, wordRec);
 
     if (!args.keepTmp && fs.existsSync(tmpOutPath)) {
       fs.rmSync(tmpOutPath, { force: true });
@@ -429,6 +510,15 @@ function main() {
       );
     }
   }
+
+  const finalOrder = mergeWordOrder(
+    existingWordOrder,
+    words.map((x) => x.word),
+  );
+  db.words = finalOrder.map((w) => outMap.get(w)).filter(Boolean);
+  db.summary = recomputeSummary(db.words);
+  db.meta.processedCount = db.words.length;
+  db.meta.updatedAt = new Date().toISOString();
 
   writeJson(args.outFile, db);
   console.log("");

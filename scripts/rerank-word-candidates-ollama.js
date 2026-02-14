@@ -7,16 +7,14 @@ const { spawnSync } = require("node:child_process");
 const crypto = require("node:crypto");
 
 const DEFAULT_DB_FILE = path.join(
-  "source_content",
-  "shingeki_no_kyojin",
-  "subs",
+  "out",
+  "shorts",
   "word-candidates-db.json",
 );
 const DEFAULT_OUT_FILE = path.join(
-  "source_content",
-  "shingeki_no_kyojin",
-  "subs",
-  "word-candidates-llm-top.json",
+  "out",
+  "shorts",
+  "word-candidates-llm-top.qwen2.5-3b.full.json",
 );
 
 function parseArgs(argv) {
@@ -962,6 +960,20 @@ function buildWordMap(words) {
   return map;
 }
 
+function mergeWordOrder(primary, secondary) {
+  const out = [];
+  const seen = new Set();
+  for (const list of [primary, secondary]) {
+    for (const raw of list || []) {
+      const word = String(raw || "").trim();
+      if (!word || seen.has(word)) continue;
+      seen.add(word);
+      out.push(word);
+    }
+  }
+  return out;
+}
+
 function enrichTopPicks(picks, candidates, asrByIndex) {
   return picks.map((p, i) => {
     const c = candidates[p.candidateIndex - 1];
@@ -1298,6 +1310,12 @@ async function main() {
   }
 
   const outMap = buildWordMap(out.words);
+  const existingWordOrder = out.words.map((w) => String(w?.word || "").trim()).filter(Boolean);
+  const sourceWordOrder = source.words.map((w) => String(w?.word || "").trim()).filter(Boolean);
+  const mergedWordOrder =
+    sourceWordOrder.length >= existingWordOrder.length
+      ? mergeWordOrder(sourceWordOrder, existingWordOrder)
+      : mergeWordOrder(existingWordOrder, sourceWordOrder);
   const total = targetWords.length;
   const asrCache = args.asrVerify ? loadAsrCache(args.asrCacheFile) : null;
   if (args.asrVerify) {
@@ -1339,8 +1357,8 @@ async function main() {
       });
     }
 
-    out.words = source.words
-      .map((w) => outMap.get(w.word))
+    out.words = mergedWordOrder
+      .map((word) => outMap.get(word))
       .filter(Boolean);
     recomputeSummary(out, targetWords);
     writeJsonAtomic(args.outFile, out);
@@ -1359,8 +1377,8 @@ async function main() {
     }
   }
 
-  out.words = source.words
-    .map((w) => outMap.get(w.word))
+  out.words = mergedWordOrder
+    .map((word) => outMap.get(word))
     .filter(Boolean);
   recomputeSummary(out, targetWords);
   writeJsonAtomic(args.outFile, out);

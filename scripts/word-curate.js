@@ -11,7 +11,6 @@ const DEFAULTS = {
   enSubsDir: path.join("source_content", "shingeki_no_kyojin", "subs", "english_embedded"),
   videosDir: path.join("source_content", "shingeki_no_kyojin", "videos"),
   outBase: path.join("out", "shorts"),
-  profile: "fast",
   model: "llama3.2:3b",
   topK: 5,
   printTop: 40,
@@ -56,6 +55,29 @@ function runOrThrow(cmd, args) {
   if (res.status !== 0) {
     throw new Error(`${cmd} failed (${res.status})`);
   }
+}
+
+function runCaptureOrThrow(cmd, args) {
+  const res = spawnSync(cmd, args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024 * 20,
+  });
+  if (res.status !== 0) {
+    const stderr = String(res.stderr || "").trim();
+    const stdout = String(res.stdout || "").trim();
+    const tail = [stderr, stdout]
+      .filter(Boolean)
+      .join("\n")
+      .split(/\r?\n/g)
+      .slice(-40)
+      .join("\n");
+    throw new Error(`${cmd} failed (${res.status})${tail ? `\n${tail}` : ""}`);
+  }
+  return {
+    stdout: String(res.stdout || ""),
+    stderr: String(res.stderr || ""),
+  };
 }
 
 function readJsonOrNull(filePath) {
@@ -108,7 +130,7 @@ function parseReplaceSpec(spec) {
 }
 
 function getOutRoot() {
-  return path.resolve(DEFAULTS.outBase, DEFAULTS.profile);
+  return path.resolve(DEFAULTS.outBase);
 }
 
 function getManifestPath() {
@@ -116,7 +138,137 @@ function getManifestPath() {
 }
 
 function getRerankPath() {
-  return path.join(getOutRoot(), "word-candidates-llm-top.json");
+  const outRoot = getOutRoot();
+  const primary = path.join(outRoot, "word-candidates-llm-top.qwen2.5-3b.full.json");
+  if (fs.existsSync(primary)) return primary;
+  const backup = path.join(
+    path.resolve(outRoot, "..", "saveFile"),
+    "word-candidates-llm-top.qwen2.5-3b.full.backup.json",
+  );
+  if (fs.existsSync(backup)) return backup;
+  return primary;
+}
+
+function getDbPath() {
+  return path.join(getOutRoot(), "word-candidates-db.json");
+}
+
+function normalizeFileForKey(filePath) {
+  return String(filePath || "").replace(/\\/g, "/");
+}
+
+function candidateKeyFromRecord(rec) {
+  const videoFile = normalizeFileForKey(rec?.videoFile);
+  const clipStartMs = Number(rec?.clipStartMs);
+  const clipEndMs = Number(rec?.clipEndMs);
+  if (!videoFile || !Number.isFinite(clipStartMs) || !Number.isFinite(clipEndMs)) {
+    return "";
+  }
+  return `${videoFile}|${Math.round(clipStartMs)}|${Math.round(clipEndMs)}`;
+}
+
+function loadDbWordRecord(word) {
+  const db = readJsonOrNull(getDbPath());
+  if (!db || !Array.isArray(db.words)) return null;
+  return db.words.find((w) => String(w?.word || "") === word) || null;
+}
+
+function buildRenderPool(word) {
+  const outRoot = getOutRoot();
+  const workDir = path.join(outRoot, "work");
+  fs.mkdirSync(workDir, { recursive: true });
+  const poolFile = path.join(workDir, `.tmp_pool_${safeFilename(word)}.json`);
+
+  runCaptureOrThrow(process.execPath, [
+    path.join("scripts", "extract-clips.js"),
+    "--query",
+    word,
+    "--subsDir",
+    DEFAULTS.subsDir,
+    "--enSubsDir",
+    DEFAULTS.enSubsDir,
+    "--videosDir",
+    DEFAULTS.videosDir,
+    "--wordList",
+    DEFAULTS.wordsFile,
+    "--mode",
+    "line",
+    "--rank",
+    "--limit",
+    "1",
+    "--prePadMs",
+    "0",
+    "--postPadMs",
+    "0",
+    "--maxClipMs",
+    "2000",
+    "--longPolicy",
+    "skip",
+    "--dryRun",
+    "--candidatesOut",
+    poolFile,
+  ]);
+
+  const poolJson = readJsonOrNull(poolFile);
+  const pool = Array.isArray(poolJson?.pool) ? poolJson.pool : [];
+  if (pool.length === 0) {
+    throw new Error(`No render candidates found for "${word}".`);
+  }
+  return pool;
+}
+
+function mapDbPicksToRenderPool(word, picks) {
+  const dbRec = loadDbWordRecord(word);
+  if (!dbRec || !Array.isArray(dbRec.candidates) || dbRec.candidates.length === 0) {
+    return {
+      dbPicks: uniquePositiveInts(picks).slice(0, DEFAULTS.topK),
+      renderPicks: uniquePositiveInts(picks).slice(0, DEFAULTS.topK),
+      mappingMode: "passthrough_no_db",
+    };
+  }
+
+  const pool = buildRenderPool(word);
+  const poolPositionsByKey = new Map();
+  for (let i = 0; i < pool.length; i++) {
+    const k = candidateKeyFromRecord(pool[i]);
+    if (!k) continue;
+    const arr = poolPositionsByKey.get(k) || [];
+    arr.push(i + 1);
+    poolPositionsByKey.set(k, arr);
+  }
+
+  const dbPicks = uniquePositiveInts(picks).slice(0, DEFAULTS.topK);
+  const renderPicks = [];
+  const used = new Set();
+  const missing = [];
+
+  for (const pick of dbPicks) {
+    const dbCandidate = dbRec.candidates[pick - 1];
+    if (!dbCandidate) {
+      missing.push(`#${pick}(missing_db_candidate)`);
+      continue;
+    }
+    const k = candidateKeyFromRecord(dbCandidate);
+    const positions = poolPositionsByKey.get(k) || [];
+    const pos = positions.find((p) => !used.has(p));
+    if (!pos) {
+      missing.push(`#${pick}`);
+      continue;
+    }
+    used.add(pos);
+    renderPicks.push(pos);
+  }
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Could not map selected picks to render pool for "${word}": ${missing.join(", ")}.`,
+    );
+  }
+  if (renderPicks.length === 0) {
+    throw new Error(`No mapped picks available for "${word}".`);
+  }
+
+  return { dbPicks, renderPicks, mappingMode: "mapped_db_to_render_pool" };
 }
 
 function getCurrentPicks(word) {
@@ -215,8 +367,11 @@ function rerenderWithPicks(word, picks, why) {
   const outRoot = getOutRoot();
   const outDir = path.join(outRoot, "work");
   const outputDir = outRoot;
-  const pickCsv = uniquePositiveInts(picks).slice(0, DEFAULTS.topK).join(",");
-  if (!pickCsv) throw new Error("No valid picks to render.");
+  const mapped = mapDbPicksToRenderPool(word, picks);
+  const dbPickCsv = mapped.dbPicks.join(",");
+  const renderPickCsv = mapped.renderPicks.join(",");
+  if (!dbPickCsv) throw new Error("No valid picks to render.");
+  if (!renderPickCsv) throw new Error("No mapped render picks available.");
 
   runOrThrow(process.execPath, [
     path.join("scripts", "make-vertical-shorts-clean.js"),
@@ -234,10 +389,20 @@ function rerenderWithPicks(word, picks, why) {
     outDir,
     "--outputDir",
     outputDir,
+    "--mode",
+    "line",
+    "--prePadMs",
+    "0",
+    "--postPadMs",
+    "0",
+    "--maxClipMs",
+    "2000",
+    "--longPolicy",
+    "skip",
     "--limit",
-    String(DEFAULTS.topK),
+    String(mapped.renderPicks.length),
     "--pick",
-    pickCsv,
+    renderPickCsv,
     "--keepOutputs",
   ]);
 
@@ -248,14 +413,19 @@ function rerenderWithPicks(word, picks, why) {
     fs.renameSync(generated, canonical);
   }
 
-  upsertManifestWordPick(word, parseCsvPicks(pickCsv), canonical);
+  upsertManifestWordPick(word, parseCsvPicks(dbPickCsv), canonical);
   appendCurationLog({
     at: new Date().toISOString(),
     word,
-    picks: pickCsv,
+    picks: dbPickCsv,
+    renderPicks: renderPickCsv,
+    mappingMode: mapped.mappingMode,
     why: String(why || "").trim(),
     output: canonical,
   });
+  console.log(
+    `[word-curate] picks db=${dbPickCsv} -> render=${renderPickCsv} (${mapped.mappingMode})`,
+  );
   console.log(`[word-curate] output: ${canonical}`);
 }
 
@@ -265,24 +435,15 @@ function replaceAndRerender(word, spec, why) {
     throw new Error(`No current picks found for "${word}". Render it once first.`);
   }
   const picks = [...current];
-  while (picks.length < DEFAULTS.topK) {
-    // backfill with ascending integers; user can refine with another replace/pick
-    let n = 1;
-    while (picks.includes(n)) n++;
-    picks.push(n);
-  }
   const { slot, candidate } = parseReplaceSpec(spec);
   if (slot > picks.length) throw new Error(`Slot ${slot} out of range for picks=${picks.join(",")}`);
+  if (picks.some((v, i) => i !== slot - 1 && Number(v) === candidate)) {
+    throw new Error(`Replace ${spec} would create duplicate picks.`);
+  }
 
   const before = [...picks];
   picks[slot - 1] = candidate;
-  const deduped = uniquePositiveInts(picks);
-  while (deduped.length < DEFAULTS.topK) {
-    let n = 1;
-    while (deduped.includes(n)) n++;
-    deduped.push(n);
-  }
-  const finalPicks = deduped.slice(0, DEFAULTS.topK);
+  const finalPicks = picks;
 
   rerenderWithPicks(word, finalPicks, why || `replace ${spec}`);
   appendCurationLog({
@@ -333,4 +494,3 @@ try {
   console.error(err?.message || String(err));
   process.exit(1);
 }
-

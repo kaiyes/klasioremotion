@@ -331,7 +331,7 @@ function parseArgs(argv) {
   args.outRoot = path.resolve(args.outRoot);
   args.dbFile = path.resolve(args.dbFile || path.join(args.outRoot, "word-candidates-db.json"));
   args.rerankFile = path.resolve(
-    args.rerankFile || path.join(args.outRoot, "word-candidates-llm-top.json"),
+    args.rerankFile || path.join(args.outRoot, "word-candidates-llm-top.qwen2.5-3b.full.json"),
   );
   args.renderOutDir = path.resolve(args.renderOutDir || path.join(args.outRoot, "videos"));
   args.manifestFile = path.resolve(
@@ -597,6 +597,8 @@ function main() {
     else buildArgs.push("--noSubOffsetsFile");
     if (args.rank) buildArgs.push("--rank");
     else buildArgs.push("--no-rank");
+    if (args.resume) buildArgs.push("--resume");
+    else buildArgs.push("--no-resume");
     if (args.verbose) buildArgs.push("--verbose");
     runNodeScript(path.join("scripts", "build-word-candidates-db.js"), buildArgs, args.verbose);
   } else if (!fs.existsSync(args.dbFile)) {
