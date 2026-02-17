@@ -100,8 +100,8 @@ function parseArgs(argv) {
     maxEnChars: 84,
     maxJpLines: 2,
     maxEnLines: 2,
-    maxJpCps: 18,
-    maxEnCps: 24,
+    maxJpCps: 16,
+    maxEnCps: 20,
     enPolishModel: String(process.env.EN_POLISH_MODEL || "").trim(),
     videoExts: DEFAULT_VIDEO_EXTS,
     verbose: false,
@@ -401,8 +401,8 @@ Options:
   --maxEnChars          Readability gate: max EN chars after fit (default: 84)
   --maxJpLines          Readability gate: max JP lines after wrap (default: 2)
   --maxEnLines          Readability gate: max EN lines after wrap (default: 2)
-  --maxJpCps            Readability gate: max JP chars/sec (default: 18)
-  --maxEnCps            Readability gate: max EN chars/sec (default: 24)
+  --maxJpCps            Readability gate: max JP chars/sec (default: 16)
+  --maxEnCps            Readability gate: max EN chars/sec (default: 20)
   --enPolishModel       Optional Ollama model to shorten EN as fallback
   --dryRun              Print planned clips / ffmpeg commands, do not run
   --verbose             More logging
@@ -1161,6 +1161,7 @@ function detectFragment(text, kind = "jp") {
   if (kind === "en") {
     return (
       /^[,;:.\-–—]/.test(s) ||
+      /^\s*(as well as|as|while|which|that)\b/i.test(s) ||
       /\b(and|but|or|so|then|because)\s*$/i.test(s) ||
       /^\s*(and|but|or|so|then|because)\b/i.test(s)
     );
@@ -1172,7 +1173,11 @@ function detectTrailing(text, kind = "jp") {
   const s = String(text || "").trim();
   if (!s) return false;
   if (kind === "en") {
-    return /[,;:\-–—]$/.test(s) || /\b(and|but|or|so|then)\s*$/i.test(s);
+    return (
+      /[,;:\-–—]$/.test(s) ||
+      /\b(and|but|or|so|then)\s*$/i.test(s) ||
+      /\b(is|are|was|were|be|been|being|to|of|that|which|who|when|where|if|because|as|than)\s*$/i.test(s)
+    );
   }
   return /[、・]$/.test(s) || /(けど|から|ので)$/.test(s);
 }
@@ -1208,7 +1213,123 @@ function hasSenseMatchByLemma(tokenizer, jpText, query, matcher) {
   return false;
 }
 
-function clipFitCandidateText(item, args, matcher) {
+function tokenizeWithSpans(tokenizer, text) {
+  const src = String(text || "");
+  if (!tokenizer || !src) return [];
+  const tokens = tokenizer.tokenize(src);
+  let cursor = 0;
+  return tokens.map((t) => {
+    const surface = String(t?.surface_form || "");
+    const start = cursor;
+    const end = start + surface.length;
+    cursor = end;
+    return {
+      ...t,
+      surface,
+      start,
+      end,
+    };
+  });
+}
+
+function isJpConnectorToken(tok) {
+  const surf = String(tok?.surface || tok?.surface_form || "").trim();
+  if (!surf) return false;
+  const p = String(tok?.pos || "").trim();
+  const p1 = String(tok?.pos_detail_1 || "").trim();
+  const connectorForms = new Set([
+    "が",
+    "けど",
+    "けれど",
+    "けれども",
+    "から",
+    "ので",
+    "のに",
+    "かつ",
+    "そして",
+    "しかし",
+    "だが",
+    "また",
+  ]);
+  if (!connectorForms.has(surf)) return false;
+  if (!p) return true;
+  return (
+    p === "助詞" ||
+    p === "接続詞" ||
+    p1.includes("接続") ||
+    p1.includes("並立") ||
+    p1.includes("終助詞")
+  );
+}
+
+function trimJapaneseAroundMatchWindow(rawJp, anchorStart, anchorEnd, tokenizer) {
+  const src = normalizeJapaneseText(rawJp);
+  if (!src || !tokenizer) return "";
+  const spans = tokenizeWithSpans(tokenizer, src);
+  if (spans.length === 0) return "";
+
+  let first = spans.findIndex((t) => t.end > anchorStart && t.start < anchorEnd);
+  if (first < 0) {
+    first = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < spans.length; i++) {
+      const mid = (spans[i].start + spans[i].end) / 2;
+      const d = Math.abs(mid - (anchorStart + anchorEnd) / 2);
+      if (d < bestDist) {
+        bestDist = d;
+        first = i;
+      }
+    }
+  }
+  let last = first;
+  for (let i = first; i < spans.length; i++) {
+    if (spans[i].start < anchorEnd) last = i;
+    else break;
+  }
+
+  let segStart = 0;
+  let segEnd = src.length;
+
+  for (const t of spans) {
+    if (!isJpConnectorToken(t)) continue;
+    if (t.end <= anchorStart && t.end > segStart) {
+      segStart = t.end;
+    } else if (t.start >= anchorEnd && t.start < segEnd) {
+      segEnd = t.start;
+      break;
+    }
+  }
+
+  for (let i = anchorStart - 1; i >= segStart; i--) {
+    if (/[。！？!?…、，,;；:：]/.test(src[i])) {
+      segStart = i + 1;
+      break;
+    }
+  }
+  for (let i = anchorEnd; i < segEnd; i++) {
+    if (/[。！？!?…、，,;；:：]/.test(src[i])) {
+      segEnd = i;
+      break;
+    }
+  }
+
+  if (segEnd <= segStart) return "";
+  let segment = trimClauseEdges(src.slice(segStart, segEnd), "jp");
+  if (Array.from(segment).length > 20) {
+    // Soft fallback: keep more local context around the match if still too long.
+    const focusLeftIdx = Math.max(0, first - 4);
+    const focusRightIdx = Math.min(spans.length - 1, last + 5);
+    const focusStart = Math.max(segStart, spans[focusLeftIdx].start);
+    const focusEnd = Math.min(segEnd, spans[focusRightIdx].end);
+    const focused = trimClauseEdges(src.slice(focusStart, focusEnd), "jp");
+    if (Array.from(focused).length >= 6) {
+      segment = focused;
+    }
+  }
+  return segment;
+}
+
+function clipFitCandidateText(item, args, fitCtx) {
   const rawJp = normalizeJapaneseText(item.sentenceText || "");
   const rawEn = normalizeEnglishText(item.enText || "");
   if (!rawJp) {
@@ -1222,7 +1343,7 @@ function clipFitCandidateText(item, args, matcher) {
   const matchTerm = String(item.matchText || "").trim();
   const anchors = Array.from(
     new Set(
-      [matchTerm, args.query, ...(matcher?.forms || [])]
+      [matchTerm, args.query, ...(fitCtx?.matcher?.forms || [])]
         .map((x) => normalizeJapaneseText(String(x || "")))
         .filter(Boolean),
     ),
@@ -1246,7 +1367,13 @@ function clipFitCandidateText(item, args, matcher) {
   const jpClauses = splitClausesWithSpans(rawJp, "jp");
   const enClauses = splitClausesWithSpans(rawEn, "en");
 
-  let jpText = pickClauseNearAnchor(jpClauses, anchorIdx, 6);
+  const windowJp = trimJapaneseAroundMatchWindow(
+    rawJp,
+    anchorIdx,
+    anchorIdx + Math.max(1, anchorLen),
+    fitCtx?.tokenizer || null,
+  );
+  let jpText = windowJp || pickClauseNearAnchor(jpClauses, anchorIdx, 6);
   if (!jpText) jpText = rawJp;
   jpText = trimClauseEdges(jpText, "jp");
 
@@ -1276,6 +1403,7 @@ function evaluateCandidateQuality(item, args, gateCtx) {
   const enText = normalizeEnglishText(item.enText || "");
   const jpChars = Array.from(jpText).length;
   const enChars = Array.from(enText.replace(/\s+/g, "")).length;
+  const queryChars = Array.from(normalizeJapaneseText(args.query || "")).length;
   const jpCps = textCps(jpChars, durationMs);
   const enCps = textCps(enChars, durationMs);
   const jpLines = wrapTextByUnits(jpText, 18, "jp");
@@ -1284,6 +1412,9 @@ function evaluateCandidateQuality(item, args, gateCtx) {
   if (!hasSenseMatchByLemma(gateCtx?.tokenizer || null, jpText, args.query, gateCtx?.matcher)) {
     reasons.push("wrong_sense");
   }
+  if (enChars === 0) reasons.push("missing_en");
+  if (jpChars < 8 || (queryChars > 0 && jpChars <= queryChars + 1)) reasons.push("fragment");
+  if (enChars > 0 && enChars < 8) reasons.push("fragment");
   if (detectFragment(jpText, "jp") || detectFragment(enText, "en")) reasons.push("fragment");
   if (detectTrailing(jpText, "jp") || detectTrailing(enText, "en")) reasons.push("trailing");
 
@@ -1343,7 +1474,7 @@ function polishEnglishWithOllama({ model, enText, jpText, query }) {
 
 function fitAndGateCandidate(item, args, gateCtx) {
   let cand = { ...item };
-  const fit = args.clipFit ? clipFitCandidateText(cand, args, gateCtx?.matcher) : null;
+  const fit = args.clipFit ? clipFitCandidateText(cand, args, gateCtx) : null;
   if (fit) {
     cand.sentenceText = fit.jpText;
     cand.enText = fit.enText;
