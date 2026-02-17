@@ -21,6 +21,29 @@ npm run -s word:board
 cp out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json
 ```
 
+## Stage 1 ASR (Sidecar Only, Safe)
+
+This does not change ranking/render files. It writes:
+- `out/shorts/word-candidates-asr-stage1.json`
+
+One word:
+
+```bash
+npm run -s asr:stage1:one -- 高い
+```
+
+Range:
+
+```bash
+npm run -s asr:stage1:range -- 70-80
+```
+
+All (resume):
+
+```bash
+npm run -s asr:stage1
+```
+
 ## One Word
 
 Pass only the word:
