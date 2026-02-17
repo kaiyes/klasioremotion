@@ -1,6 +1,36 @@
 # Summary Of Work
 
-Last updated: `2026-02-16`
+Last updated: `2026-02-17`
+
+## Stable Lock (2026-02-17)
+- Locked commit on local + remote:
+  - `363e17cf30183e0f4f86cae4be186fb1a95404ac` (`main`, `origin/main`)
+- Active rerank file (production):
+  - `out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json`
+- Backup rerank file (synced from active, same checksum):
+  - `out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json`
+- Active candidate DB:
+  - `out/shorts/word-candidates-db.json`
+
+### Freeze Policy (Do Not Break)
+- Keep this state while uploading current shorts batch.
+- Do not run full-list rerank during production.
+- If rerank experiments are needed, do them in small windows only and validate manually.
+- If quality regresses, restore backup immediately:
+
+```bash
+cp out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json
+```
+
+### Verified Outputs In This Stable State
+- `out/shorts/高い.mp4`
+- `out/shorts/ちゃん.mp4`
+- `out/shorts/出す.mp4`
+- `out/shorts/家.mp4`
+- `out/shorts/生きる.mp4`
+- `out/shorts/見える.mp4`
+- `out/shorts/頼む.mp4`
+- `out/shorts/顔.mp4`
 
 ## Reranking Status (2026-02-16)
 - Canonical rerank file used by pipeline/UI:

@@ -1,6 +1,6 @@
 # Reranking Runbook And Incident Log
 
-Last updated: `2026-02-16`
+Last updated: `2026-02-17`
 Timezone reference used in this doc: `UTC+06:00`
 
 ## Purpose
@@ -12,7 +12,18 @@ It exists so future agents can quickly answer:
 - how to run reranking safely without damaging current output quality
 - how to recover immediately if a rerank run goes bad
 
-## Current State Snapshot (as of 2026-02-16)
+## Production Freeze (2026-02-17)
+- Keep current production behavior stable while publishing:
+  - deterministic clip-fit + readability gates
+  - manual slot curation from UI when needed
+- Do not run full-list rerank during active publishing windows.
+- Keep only two ranking truth files:
+  - `out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json` (active)
+  - `out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json` (backup)
+- Backup was re-synced from active on `2026-02-17` and verified by checksum.
+- If any ranking experiment degrades quality, restore backup immediately.
+
+## Current State Snapshot (as of 2026-02-17)
 
 ### Active files
 - Active rerank file:
@@ -26,33 +37,29 @@ It exists so future agents can quickly answer:
 
 ### Active rerank file stats
 - `words=2000`
-- `ok=1352`
-- `fallback=99`
+- `ok=11`
+- `fallback=0`
 - `skip=537`
-- `error=12`
+- `error=1452`
 - `meta.model=qwen2.5:3b`
-- `meta.updatedAt=2026-02-16T05:17:09.574Z`
+- `meta.updatedAt=2026-02-17T14:49:05.857Z`
 
 ### Backup rerank file stats
 - `words=2000`
-- `ok=1449`
+- `ok=11`
 - `fallback=0`
 - `skip=537`
-- `error=14`
-- `meta.updatedAt=2026-02-15T21:34:49.060Z`
+- `error=1452`
+- `meta.updatedAt=2026-02-17T14:49:05.857Z`
 
 ### Diff summary (active vs backup)
-- `statusChanged=100`
-- `topChanged=166`
-- `top1Changed=154`
-- Status transitions:
-  - `ok -> fallback = 98`
-  - `error -> ok = 1`
-  - `error -> fallback = 1`
+- `statusChanged=0`
+- `topChanged=0`
+- `top1Changed=0`
 
 Interpretation:
-- Most damage is not random. It is concentrated in a subset where previously renderable `ok` words became `fallback`.
-- Since standard render flow does not render fallback by default, this directly reduces automatic output coverage.
+- Active and backup are intentionally identical in the freeze state.
+- Rerank output is retained as metadata, while production quality relies primarily on deterministic gates + manual curation.
 
 ## How Ranking Is Consumed By Rendering
 

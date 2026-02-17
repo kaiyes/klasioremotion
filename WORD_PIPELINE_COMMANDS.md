@@ -3,6 +3,24 @@
 Primary output roots:
 - `out/shorts`
 
+## Stable Mode (Current)
+
+Use this mode while publishing. Do not touch rerank.
+
+```bash
+npm run -s word:board
+```
+
+- Keep ranking files frozen:
+  - `out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json`
+  - `out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json`
+- Do not run full rerank in this phase.
+- If needed, restore active from backup:
+
+```bash
+cp out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json
+```
+
 ## One Word
 
 Pass only the word:
