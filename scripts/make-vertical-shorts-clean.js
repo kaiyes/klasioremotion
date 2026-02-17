@@ -49,6 +49,7 @@ function parseArgs(argv) {
     maxClipMs: 2500,
     longPolicy: "shrink",
     printTop: 0,
+    candidatesIn: null,
     pick: null,
     replace: [],
     meaning: null,
@@ -155,6 +156,10 @@ function parseArgs(argv) {
         args.printTop = Number(v);
         takeNext();
         break;
+      case "candidatesIn":
+        args.candidatesIn = String(v || "").trim();
+        takeNext();
+        break;
       case "pick":
         args.pick = String(v);
         takeNext();
@@ -221,6 +226,7 @@ Options:
   --shuffleSeed <n>          Deterministic seed for shuffle
   --shuffleTop <n>           Shuffle only top-N ranked candidates
   --printTop <n>             Print top candidate list
+  --candidatesIn <file>      Use provided candidates JSON (array or {pool:[...]})
   --pick <list>              Pick ranked indices, e.g. "1,2,7,9,11"
   --replace <a=b>            Replace picked slot with ranked index, e.g. "3=12"
   --meaning <text>           Override meaning shown on top card
@@ -799,6 +805,7 @@ async function main() {
     extractArgs.push("--shuffleTop", String(args.shuffleTop));
   }
   if (args.printTop > 0) extractArgs.push("--printTop", String(args.printTop));
+  if (args.candidatesIn) extractArgs.push("--candidatesIn", args.candidatesIn);
   if (args.pick) extractArgs.push("--pick", args.pick);
   for (const r of args.replace) extractArgs.push("--replace", r);
   if (args.verbose) extractArgs.push("--verbose");

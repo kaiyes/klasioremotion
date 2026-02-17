@@ -1,6 +1,35 @@
 # Summary Of Work
 
-Last updated: `2026-02-11`
+Last updated: `2026-02-16`
+
+## Reranking Status (2026-02-16)
+- Canonical rerank file used by pipeline/UI:
+  - `out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json`
+- Backup rerank file to keep:
+  - `out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json`
+- Candidate DB:
+  - `out/shorts/word-candidates-db.json`
+
+### What happened
+- A partial rerank run from index `60` changed many picks in the active range.
+- Diff vs backup:
+  - `statusChanged=100`
+  - `topChanged=166`
+  - `top1Changed=154`
+  - most transitions were `ok -> fallback` in range `60-300`.
+- Render batch `60-300` still produced usable output for many words (`204/241` rendered in manifest).
+
+### Current policy (locked)
+- Do not run full-list rerank blindly.
+- Rerank in small windows only (`10` words).
+- Validate results in UI before scaling to next window.
+- Keep exactly one active rerank file + one backup copy.
+
+### Practical source of truth
+- For render behavior and chosen picks, trust:
+  - `out/shorts/render-manifest.json`
+- For ranking inputs, trust:
+  - `out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json`
 
 ## Resume IDs
 - `snk-furigana-center-romaji-fix-2026-02-06`
@@ -289,5 +318,6 @@ npm run -s align-episode-subs -- --episode s4e30 --enSubsDir source_content/shin
 - `source_content/card.mp4` is not whitelisted in `.gitignore` right now.
 
 ## Related Docs
+- `RERANKING.md`
 - `AUTO_SHORT_THREAD_HANDOFF.md`
 - `README.md`

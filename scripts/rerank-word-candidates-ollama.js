@@ -25,6 +25,7 @@ function parseArgs(argv) {
     host: "http://127.0.0.1:11434",
     topK: 5,
     maxCandidates: 50,
+    llmTopN: 15,
     fromIndex: 1,
     count: 0,
     resume: true,
@@ -83,6 +84,10 @@ function parseArgs(argv) {
         break;
       case "maxCandidates":
         args.maxCandidates = Number(v);
+        takeNext();
+        break;
+      case "llmTopN":
+        args.llmTopN = Number(v);
         takeNext();
         break;
       case "fromIndex":
@@ -206,6 +211,9 @@ function parseArgs(argv) {
   if (!Number.isFinite(args.maxCandidates) || args.maxCandidates <= 0) {
     throw new Error("--maxCandidates must be a positive number.");
   }
+  if (!Number.isFinite(args.llmTopN) || args.llmTopN <= 0) {
+    throw new Error("--llmTopN must be a positive number.");
+  }
   if (!Number.isFinite(args.fromIndex) || args.fromIndex <= 0) {
     throw new Error("--fromIndex must be a positive number.");
   }
@@ -252,6 +260,7 @@ Options:
   --host <url>             Ollama host (default: http://127.0.0.1:11434)
   --topK <n>               Top picks per word (default: 5)
   --maxCandidates <n>      Max candidates per word sent to LLM (default: 50)
+  --llmTopN <n>            LLM tie-break shortlist size from heuristic rank (default: 15)
   --fromIndex <n>          1-based start index in DB words (default: 1)
   --count <n>              Number of words to process (0 = all from fromIndex)
   --resume / --no-resume   Resume from existing outFile (default: resume)
@@ -466,6 +475,27 @@ function fallbackCompositeScore(candidate, asr) {
     if (Number(asr.agreement) < 0.35) score -= 10;
   }
   return Math.round(score * 10) / 10;
+}
+
+function heuristicPreRankCandidates(candidates, asrByIndex = null) {
+  return (Array.isArray(candidates) ? candidates : [])
+    .map((c, idx) => {
+      const sourceIndex = Number(c?.__sourceIndex) || idx + 1;
+      const asr = asrByIndex?.get?.(sourceIndex) || null;
+      return {
+        candidate: c,
+        heuristicRankScore: fallbackCompositeScore(c, asr),
+      };
+    })
+    .sort((a, b) => {
+      if (b.heuristicRankScore !== a.heuristicRankScore) {
+        return b.heuristicRankScore - a.heuristicRankScore;
+      }
+      const ai = Number(a.candidate?.__sourceIndex) || 0;
+      const bi = Number(b.candidate?.__sourceIndex) || 0;
+      return ai - bi;
+    })
+    .map((row) => row.candidate);
 }
 
 function fallbackRanking(candidates, topK, asrByIndex = null) {
@@ -895,6 +925,7 @@ function buildOutputSkeleton(args, sourceDb, targetWords) {
       host: args.host,
       topK: args.topK,
       maxCandidates: args.maxCandidates,
+      llmTopN: args.llmTopN,
       fromIndex: args.fromIndex,
       count: args.count,
       timeoutSec: args.timeoutSec,
@@ -1156,8 +1187,8 @@ async function processWord({ args, sourceWord, outMap, asrCache }) {
     sourceWord,
     candidates,
   });
-  const rankedCandidates = gated.candidates;
-  if (rankedCandidates.length === 0) {
+  const gatedCandidates = gated.candidates;
+  if (gatedCandidates.length === 0) {
     outMap.set(word, {
       ...base,
       gateStats: gated.stats,
@@ -1173,9 +1204,9 @@ async function processWord({ args, sourceWord, outMap, asrCache }) {
   const asrBySourceIndex = new Map();
   if (args.asrVerify) {
     const verifyCount =
-      args.asrTopN > 0 ? Math.min(args.asrTopN, rankedCandidates.length) : rankedCandidates.length;
+      args.asrTopN > 0 ? Math.min(args.asrTopN, gatedCandidates.length) : gatedCandidates.length;
     for (let idx = 0; idx < verifyCount; idx++) {
-      const c = rankedCandidates[idx];
+      const c = gatedCandidates[idx];
       const verified = verifyCandidateAsr({
         args,
         candidate: c,
@@ -1186,7 +1217,13 @@ async function processWord({ args, sourceWord, outMap, asrCache }) {
     }
   }
 
-  const labeled = rankedCandidates.map((c, i) =>
+  const heuristicCandidates = heuristicPreRankCandidates(gatedCandidates, asrBySourceIndex);
+  const llmPoolSize = Math.max(
+    args.topK,
+    Math.min(args.llmTopN, heuristicCandidates.length),
+  );
+  const llmCandidates = heuristicCandidates.slice(0, llmPoolSize);
+  const labeled = llmCandidates.map((c, i) =>
     candidateLabel(c, i, asrBySourceIndex.get(Number(c.__sourceIndex) || i + 1) || null),
   );
   const prompt = buildPrompt({
@@ -1198,10 +1235,12 @@ async function processWord({ args, sourceWord, outMap, asrCache }) {
   let ranking = null;
   let status = "ok";
   let errorMessage = null;
+  let rankingMapCandidates = null;
 
   if (args.dryRun) {
-    ranking = fallbackRanking(rankedCandidates, args.topK, asrBySourceIndex);
+    ranking = fallbackRanking(heuristicCandidates, args.topK, asrBySourceIndex);
     status = "fallback";
+    rankingMapCandidates = heuristicCandidates;
   } else {
     let lastErr = null;
     for (let attempt = 0; attempt <= args.retries; attempt++) {
@@ -1214,7 +1253,7 @@ async function processWord({ args, sourceWord, outMap, asrCache }) {
           temperature: args.temperature,
         });
         const parsed = extractFirstJsonObject(rawText);
-        const normalized = normalizeRanking(parsed, rankedCandidates.length, args.topK);
+        const normalized = normalizeRanking(parsed, llmCandidates.length, args.topK);
         if (!normalized) {
           throw new Error("Model response was not valid ranking JSON.");
         }
@@ -1235,7 +1274,8 @@ async function processWord({ args, sourceWord, outMap, asrCache }) {
       errorMessage = String(lastErrToMessage(lastErr));
       if (args.allowFallback) {
         status = "fallback";
-        ranking = fallbackRanking(rankedCandidates, args.topK, asrBySourceIndex);
+        ranking = fallbackRanking(heuristicCandidates, args.topK, asrBySourceIndex);
+        rankingMapCandidates = heuristicCandidates;
       } else {
         outMap.set(word, {
           ...base,
@@ -1250,8 +1290,11 @@ async function processWord({ args, sourceWord, outMap, asrCache }) {
       }
     }
     if (ranking) {
-      ranking = supplementRankingToTopK(ranking, rankedCandidates, args.topK, asrBySourceIndex);
-      ranking = mapRankingToSourceIndices(ranking, rankedCandidates);
+      if (!rankingMapCandidates) {
+        ranking = supplementRankingToTopK(ranking, llmCandidates, args.topK, asrBySourceIndex);
+        rankingMapCandidates = llmCandidates;
+      }
+      ranking = mapRankingToSourceIndices(ranking, rankingMapCandidates);
     }
   }
 

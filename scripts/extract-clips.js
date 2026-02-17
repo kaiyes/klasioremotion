@@ -82,6 +82,7 @@ function parseArgs(argv) {
     shuffle: false,
     shuffleSeed: null,
     shuffleTop: 0,
+    candidatesIn: null,
     candidatesOut: null,
     printTop: 0,
     pick: null,
@@ -227,6 +228,10 @@ function parseArgs(argv) {
         args.shuffleTop = Number(value);
         takeNext();
         break;
+      case "candidatesIn":
+        args.candidatesIn = value;
+        takeNext();
+        break;
       case "candidatesOut":
         args.candidatesOut = value;
         takeNext();
@@ -327,6 +332,7 @@ Options:
   --shuffle             Shuffle candidate selection order (after ranking/dedup)
   --shuffleSeed         Deterministic seed for --shuffle
   --shuffleTop          Only shuffle the first N candidates (0 = all)
+  --candidatesIn        Read candidate pool JSON (array or {pool:[...]}) instead of subtitle scan
   --candidatesOut       Write candidates JSON (planned/pool/selected) to this file
   --printTop            Print the top N ranked candidates with scores (default: 0)
   --pick                Comma list of ranked candidate indices to use (1-based), e.g. "1,2,7,10"
@@ -780,6 +786,56 @@ function writeJsonFile(filePath, value) {
   const abs = path.resolve(filePath);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   fs.writeFileSync(abs, JSON.stringify(value, null, 2));
+}
+
+function normalizeExternalCandidate(raw, idx) {
+  const subFile = String(raw?.subFile || "").trim();
+  const videoFile = String(raw?.videoFile || "").trim();
+  const clipStartMs = Number(raw?.clipStartMs);
+  const clipEndMs = Number(raw?.clipEndMs);
+  const matchStartMsRaw = Number(raw?.matchStartMs);
+  const matchEndMsRaw = Number(raw?.matchEndMs);
+  const sentenceText = String(raw?.sentenceText || raw?.jpText || "").trim();
+  const enText = String(raw?.enText || "").trim();
+
+  if (!subFile || !videoFile || !Number.isFinite(clipStartMs) || !Number.isFinite(clipEndMs)) {
+    throw new Error(`Bad external candidate #${idx}: missing sub/video/time fields.`);
+  }
+  if (clipEndMs <= clipStartMs) {
+    throw new Error(`Bad external candidate #${idx}: clipEndMs <= clipStartMs.`);
+  }
+  if (!sentenceText) {
+    throw new Error(`Bad external candidate #${idx}: sentence text is empty.`);
+  }
+
+  const matchStartMs = Number.isFinite(matchStartMsRaw) ? matchStartMsRaw : clipStartMs;
+  const matchEndMs = Number.isFinite(matchEndMsRaw) ? matchEndMsRaw : clipEndMs;
+
+  return {
+    subFile,
+    videoFile,
+    clipStartMs,
+    clipEndMs,
+    matchText: String(raw?.matchText || "").trim(),
+    matchStartMs,
+    matchEndMs,
+    sentenceText,
+    enText,
+    score: Number.isFinite(Number(raw?.score)) ? Number(raw.score) : 0,
+  };
+}
+
+function loadCandidatesIn(filePath) {
+  const abs = path.resolve(String(filePath || ""));
+  if (!abs || !fs.existsSync(abs)) {
+    throw new Error(`--candidatesIn not found: ${filePath}`);
+  }
+  const parsed = JSON.parse(fs.readFileSync(abs, "utf8"));
+  const rawList = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.pool) ? parsed.pool : [];
+  if (!Array.isArray(rawList) || rawList.length === 0) {
+    throw new Error(`--candidatesIn has no candidates: ${filePath}`);
+  }
+  return rawList.map((raw, idx) => normalizeExternalCandidate(raw, idx + 1));
 }
 
 function parseIndexToken(raw, label) {
@@ -1993,18 +2049,56 @@ function applyMaxDuration({
   return { startMs: newStart, endMs: newEnd, skipped: false };
 }
 
+function applyClipWindowRules(item, args, { allowSkip = true } = {}) {
+  let clipStartMs = Math.max(0, Number(item.clipStartMs) - Number(args.prePadMs || 0));
+  let clipEndMs = Number(item.clipEndMs) + Number(args.postPadMs || 0);
+  const matchStartMs = Number.isFinite(Number(item.matchStartMs))
+    ? Number(item.matchStartMs)
+    : Number(item.clipStartMs);
+  const matchEndMs = Number.isFinite(Number(item.matchEndMs))
+    ? Number(item.matchEndMs)
+    : Number(item.clipEndMs);
+
+  const maxed = applyMaxDuration({
+    startMs: clipStartMs,
+    endMs: clipEndMs,
+    maxClipMs: args.maxClipMs,
+    policy: allowSkip ? args.longPolicy : "shrink",
+    matchStartMs,
+    matchEndMs,
+  });
+  if (maxed.skipped) return null;
+  clipStartMs = maxed.startMs;
+  clipEndMs = maxed.endMs;
+
+  const ensured = ensureMinDuration({
+    startMs: clipStartMs,
+    endMs: clipEndMs,
+    minClipMs: args.minClipMs,
+  });
+
+  return {
+    ...item,
+    clipStartMs: ensured.startMs,
+    clipEndMs: ensured.endMs,
+    matchStartMs,
+    matchEndMs,
+  };
+}
+
 async function main() {
   const args = parseArgs(process.argv);
+  const usingCandidatesIn = Boolean(args.candidatesIn);
 
   if (!args.query) {
     console.error("--query is required");
     printHelpAndExit(1);
   }
-  if (!args.subFile && !args.subsDir) {
+  if (!usingCandidatesIn && !args.subFile && !args.subsDir) {
     console.error("Provide --subFile or --subsDir");
     printHelpAndExit(1);
   }
-  if (args.subFile && args.subsDir) {
+  if (!usingCandidatesIn && args.subFile && args.subsDir) {
     console.error("Use either --subFile or --subsDir (not both)");
     printHelpAndExit(1);
   }
@@ -2064,146 +2158,159 @@ async function main() {
       `Query matcher forms=${queryMatcher.forms.length} exclude=${queryMatcher.exclude.length}`,
     );
   }
-
-  const subFiles = args.subFile
-    ? [args.subFile]
-    : listSubtitleFiles(args.subsDir);
-  const seasonOffsets = buildSeasonOffsets(subFiles);
-
-  const videoIndex = args.videosDir ? buildVideoIndex(args.videosDir, args.videoExts) : null;
-  const subOffsets = loadSubOffsets(args.subOffsetsFile, args.verbose);
-  const enIndex = args.enSubsDir ? buildSubtitleIndex(args.enSubsDir) : null;
-  const enCache = new Map();
-
   const planned = [];
-  const dedupe = new Set();
-
-  for (const subFile of subFiles) {
-    const mappedJpOffsetMs = getSubOffsetForFile(subFile, subOffsets, "jp");
-    const effectiveJpOffsetMs = mappedJpOffsetMs + args.subOffsetMs;
-    const mappedEnOffsetMs = getSubOffsetForFile(subFile, subOffsets, "en");
-    const effectiveEnOffsetMs = mappedEnOffsetMs + args.subOffsetMs;
-    if (args.verbose && (effectiveJpOffsetMs !== 0 || effectiveEnOffsetMs !== 0)) {
-      console.log(
-        `Using offsets jp=${effectiveJpOffsetMs}ms en=${effectiveEnOffsetMs}ms for ${path.basename(subFile)}`,
-      );
+  if (usingCandidatesIn) {
+    const external = loadCandidatesIn(args.candidatesIn);
+    for (const c of external) {
+      // Keep index mapping stable for --pick in candidatesIn mode:
+      // never drop candidates due to long-policy skip; shrink instead.
+      const adjusted = applyClipWindowRules(c, args, { allowSkip: false });
+      if (adjusted) planned.push(adjusted);
     }
-    const items = applyOffset(parseSubsFile(subFile), effectiveJpOffsetMs);
-    if (items.length === 0) continue;
-    const enItems = getEnglishItemsForSubFile(
-      subFile,
-      enIndex,
-      enCache,
-      seasonOffsets,
-      effectiveEnOffsetMs,
-    );
+    if (args.verbose) {
+      console.log(`Loaded ${planned.length} candidates from --candidatesIn ${args.candidatesIn}`);
+    }
+  } else {
+    const subFiles = args.subFile
+      ? [args.subFile]
+      : listSubtitleFiles(args.subsDir);
+    const seasonOffsets = buildSeasonOffsets(subFiles);
 
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
-      const matchInfo = findMatchInText(it.text, queryMatcher);
-      if (!matchInfo) continue;
-      const matchText = matchInfo.matchText;
-      if (args.matchContains && !matchText.includes(args.matchContains)) continue;
+    const videoIndex = args.videosDir ? buildVideoIndex(args.videosDir, args.videoExts) : null;
+    const subOffsets = loadSubOffsets(args.subOffsetsFile, args.verbose);
+    const enIndex = args.enSubsDir ? buildSubtitleIndex(args.enSubsDir) : null;
+    const enCache = new Map();
+    const dedupe = new Set();
 
-      const win =
-        args.mode === "sentence"
-          ? sentenceWindow(items, i, args)
-          : { start: i, end: i };
-      const startItem = items[win.start];
-      const endItem = items[win.end];
-
-      const estimated = estimateMatchTimeInLine({
-        text: it.text,
-        query: matchText,
-        startMs: it.startMs,
-        endMs: it.endMs,
-      });
-
-      const sentenceText =
-        args.mode === "sentence"
-          ? items
-              .slice(win.start, win.end + 1)
-              .map((x) => x.text)
-              .join(" ")
-              .replace(/\s+/g, " ")
-              .trim()
-          : it.text.replace(/\s+/g, " ").trim();
-
-      let clipStartMs =
-        args.mode === "line"
-          ? Math.max(0, it.startMs - args.prePadMs)
-          : Math.max(0, startItem.startMs - args.prePadMs);
-      let clipEndMs =
-        args.mode === "line"
-          ? it.endMs + args.postPadMs
-          : endItem.endMs + args.postPadMs;
-
-      // Enforce the "not longer than 1-2 seconds" preference:
-      // If the subtitle line is longer, either skip it or shrink around the match.
-      const maxed = applyMaxDuration({
-        startMs: clipStartMs,
-        endMs: clipEndMs,
-        maxClipMs: args.maxClipMs,
-        policy: args.longPolicy,
-        matchStartMs: estimated.matchStartMs,
-        matchEndMs: estimated.matchEndMs,
-      });
-      if (maxed.skipped) continue;
-      clipStartMs = maxed.startMs;
-      clipEndMs = maxed.endMs;
-
-      const ensured = ensureMinDuration({
-        startMs: clipStartMs,
-        endMs: clipEndMs,
-        minClipMs: args.minClipMs,
-      });
-      clipStartMs = ensured.startMs;
-      clipEndMs = ensured.endMs;
-
-      const key = `${subFile}::${clipStartMs}::${clipEndMs}`;
-      if (dedupe.has(key)) continue;
-      dedupe.add(key);
-
-      const videoFile =
-        args.video ?? findVideoForSubs(subFile, args.videosDir, args.videoExts, videoIndex);
-
-      const enText = enItems
-        ? findEnglishForTime(enItems, clipStartMs, clipEndMs, {
-            policy: args.enLinePolicy,
-            focusStartMs: estimated.matchStartMs,
-            focusEndMs: estimated.matchEndMs,
-          })
-        : "";
-      const matchCenterDistMs = Math.abs(
-        (estimated.matchStartMs + estimated.matchEndMs) / 2 -
-          (clipStartMs + clipEndMs) / 2,
-      );
-      const score = scoreCandidate({
-        jpText: sentenceText,
-        enText,
-        durationMs: clipEndMs - clipStartMs,
-        matchCenterDistMs,
-      });
-      planned.push({
+    for (const subFile of subFiles) {
+      const mappedJpOffsetMs = getSubOffsetForFile(subFile, subOffsets, "jp");
+      const effectiveJpOffsetMs = mappedJpOffsetMs + args.subOffsetMs;
+      const mappedEnOffsetMs = getSubOffsetForFile(subFile, subOffsets, "en");
+      const effectiveEnOffsetMs = mappedEnOffsetMs + args.subOffsetMs;
+      if (args.verbose && (effectiveJpOffsetMs !== 0 || effectiveEnOffsetMs !== 0)) {
+        console.log(
+          `Using offsets jp=${effectiveJpOffsetMs}ms en=${effectiveEnOffsetMs}ms for ${path.basename(subFile)}`,
+        );
+      }
+      const items = applyOffset(parseSubsFile(subFile), effectiveJpOffsetMs);
+      if (items.length === 0) continue;
+      const enItems = getEnglishItemsForSubFile(
         subFile,
-        videoFile,
-        clipStartMs,
-        clipEndMs,
-        matchText,
-        matchStartMs: estimated.matchStartMs,
-        matchEndMs: estimated.matchEndMs,
-        sentenceText,
-        enText,
-        score,
-      });
+        enIndex,
+        enCache,
+        seasonOffsets,
+        effectiveEnOffsetMs,
+      );
+
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        const matchInfo = findMatchInText(it.text, queryMatcher);
+        if (!matchInfo) continue;
+        const matchText = matchInfo.matchText;
+        if (args.matchContains && !matchText.includes(args.matchContains)) continue;
+
+        const win =
+          args.mode === "sentence"
+            ? sentenceWindow(items, i, args)
+            : { start: i, end: i };
+        const startItem = items[win.start];
+        const endItem = items[win.end];
+
+        const estimated = estimateMatchTimeInLine({
+          text: it.text,
+          query: matchText,
+          startMs: it.startMs,
+          endMs: it.endMs,
+        });
+
+        const sentenceText =
+          args.mode === "sentence"
+            ? items
+                .slice(win.start, win.end + 1)
+                .map((x) => x.text)
+                .join(" ")
+                .replace(/\s+/g, " ")
+                .trim()
+            : it.text.replace(/\s+/g, " ").trim();
+
+        let clipStartMs =
+          args.mode === "line"
+            ? Math.max(0, it.startMs - args.prePadMs)
+            : Math.max(0, startItem.startMs - args.prePadMs);
+        let clipEndMs =
+          args.mode === "line"
+            ? it.endMs + args.postPadMs
+            : endItem.endMs + args.postPadMs;
+
+        // Enforce the "not longer than 1-2 seconds" preference:
+        // If the subtitle line is longer, either skip it or shrink around the match.
+        const maxed = applyMaxDuration({
+          startMs: clipStartMs,
+          endMs: clipEndMs,
+          maxClipMs: args.maxClipMs,
+          policy: args.longPolicy,
+          matchStartMs: estimated.matchStartMs,
+          matchEndMs: estimated.matchEndMs,
+        });
+        if (maxed.skipped) continue;
+        clipStartMs = maxed.startMs;
+        clipEndMs = maxed.endMs;
+
+        const ensured = ensureMinDuration({
+          startMs: clipStartMs,
+          endMs: clipEndMs,
+          minClipMs: args.minClipMs,
+        });
+        clipStartMs = ensured.startMs;
+        clipEndMs = ensured.endMs;
+
+        const key = `${subFile}::${clipStartMs}::${clipEndMs}`;
+        if (dedupe.has(key)) continue;
+        dedupe.add(key);
+
+        const videoFile =
+          args.video ?? findVideoForSubs(subFile, args.videosDir, args.videoExts, videoIndex);
+
+        const enText = enItems
+          ? findEnglishForTime(enItems, clipStartMs, clipEndMs, {
+              policy: args.enLinePolicy,
+              focusStartMs: estimated.matchStartMs,
+              focusEndMs: estimated.matchEndMs,
+            })
+          : "";
+        const matchCenterDistMs = Math.abs(
+          (estimated.matchStartMs + estimated.matchEndMs) / 2 -
+            (clipStartMs + clipEndMs) / 2,
+        );
+        const score = scoreCandidate({
+          jpText: sentenceText,
+          enText,
+          durationMs: clipEndMs - clipStartMs,
+          matchCenterDistMs,
+        });
+        planned.push({
+          subFile,
+          videoFile,
+          clipStartMs,
+          clipEndMs,
+          matchText,
+          matchStartMs: estimated.matchStartMs,
+          matchEndMs: estimated.matchEndMs,
+          sentenceText,
+          enText,
+          score,
+        });
+      }
     }
   }
 
   let pool = planned;
-  if (args.rank) {
+  if (!usingCandidatesIn && args.rank) {
     pool = [...planned].sort((a, b) => b.score - a.score);
   }
-  pool = uniqueBySentence(pool);
+  if (!usingCandidatesIn) {
+    pool = uniqueBySentence(pool);
+  }
 
   let selectionPool = pool;
   let shuffleSeedUsed = null;

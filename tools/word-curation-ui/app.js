@@ -292,6 +292,49 @@ function uniqueRowPicks(row) {
   return valid.slice(0, TOP_K);
 }
 
+function nextReviewRowPicks(row, previousPicks = []) {
+  const map = row?.candidateMap instanceof Map ? row.candidateMap : null;
+  const indexes = uniquePositiveInts(Array.from(map ? map.keys() : []))
+    .sort((a, b) => a - b);
+  if (indexes.length === 0) return [];
+  const need = Math.max(1, Math.min(TOP_K, indexes.length));
+  if (indexes.length <= need) return indexes.slice(0, need);
+
+  const prev = uniquePositiveInts(previousPicks).filter((n) => indexes.includes(n));
+  const anchor = prev[0];
+  const basePos = anchor ? indexes.indexOf(anchor) : -1;
+  let pos = basePos >= 0 ? (basePos + 1) % indexes.length : 0;
+
+  const out = [];
+  const seen = new Set();
+  while (out.length < need && seen.size < indexes.length) {
+    const n = indexes[pos];
+    if (!seen.has(n)) {
+      seen.add(n);
+      out.push(n);
+    }
+    pos = (pos + 1) % indexes.length;
+  }
+  return out;
+}
+
+function applyReviewRowPicks(row, picks) {
+  const finalPicks = uniquePositiveInts(picks).slice(0, TOP_K);
+  if (finalPicks.length === 0) return;
+  const prevSlots = Array.isArray(row?.slots) ? row.slots : [];
+  row.basePicks = [...finalPicks];
+  row.slots = finalPicks.map((candidateIndex, i) => {
+    const prev = prevSlots[i] || null;
+    return {
+      slot: i + 1,
+      candidateIndex: Number(candidateIndex) || i + 1,
+      reason: String(prev?.reason || ""),
+      badTags: Array.isArray(prev?.badTags) ? [...prev.badTags] : [],
+      locked: Boolean(prev?.locked),
+    };
+  });
+}
+
 function normalizeFamilyForms(forms, word) {
   const out = [];
   const seen = new Set();
@@ -567,7 +610,7 @@ function renderReviewGrid() {
     const familySelect = document.createElement("select");
     const allOpt = document.createElement("option");
     allOpt.value = "";
-    allOpt.textContent = "All Forms";
+    allOpt.textContent = "All Forms (Mix)";
     familySelect.appendChild(allOpt);
     for (const f of Array.isArray(row.familyForms) ? row.familyForms : []) {
       if (f === row.word) continue;
@@ -709,12 +752,23 @@ function renderReviewGrid() {
     regenRowBtn.className = "btn btn-small";
     regenRowBtn.textContent = "Regenerate Row";
     regenRowBtn.addEventListener("click", async () => {
+      const prevPicks = uniqueRowPicks(row);
       await enqueueAndPoll(
         API.regenerateWord,
         { word: row.word, family: row.family || "" },
         `Queued candidate regeneration for ${row.word}${row.family ? ` family=${row.family}` : ""}`,
       );
+      state.reviewClipReady[reviewRowKey(row.word, row.family || "")] = true;
       await loadReviewRange();
+      const refreshed =
+        getReviewRowByIdx(Number(row.idx || 0)) || getReviewRowByWord(row.word);
+      if (refreshed) {
+        const next = nextReviewRowPicks(refreshed, prevPicks);
+        if (next.length > 0) {
+          applyReviewRowPicks(refreshed, next);
+          renderReviewGrid();
+        }
+      }
     });
 
     const applyRowBtn = document.createElement("button");
@@ -976,19 +1030,13 @@ function candidateMapFromDetail(detail) {
     return map;
   }
 
+  // Non-family mode must stay on DB/rerank candidateIndex semantics.
   const dbCands = Array.isArray(detail?.db?.candidates)
     ? detail.db.candidates
     : [];
 
   dbCands.forEach((c, i) => {
     map.set(i + 1, { ...c, candidateIndex: i + 1 });
-  });
-
-  const livePool = Array.isArray(detail?.livePool) ? detail.livePool : [];
-  livePool.forEach((c, i) => {
-    if (!map.has(i + 1)) {
-      map.set(i + 1, { ...c, candidateIndex: i + 1 });
-    }
   });
 
   for (const t of Array.isArray(detail?.rerank?.top)
@@ -1005,6 +1053,14 @@ function candidateMapFromDetail(detail) {
       clipEnd: t?.clipEnd || "",
       jpText: t?.jpText || "",
       enText: t?.enText || "",
+    });
+  }
+
+  // Fallback only when DB/rerank are unavailable.
+  if (map.size === 0) {
+    const livePool = Array.isArray(detail?.livePool) ? detail.livePool : [];
+    livePool.forEach((c, i) => {
+      map.set(i + 1, { ...c, candidateIndex: i + 1 });
     });
   }
 
@@ -1533,6 +1589,10 @@ function bindEvents() {
       { word },
       `Queued candidate regeneration for ${word}`,
     );
+    await loadWordDetail(word);
+    if (state.reviewRows && state.reviewRows.length > 0) {
+      await loadReviewRange();
+    }
   });
 
   el.openOutputBtn.addEventListener("click", () => {

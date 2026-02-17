@@ -13,8 +13,10 @@ const DEFAULTS = {
   outBase: path.join("out", "shorts"),
   model: "llama3.2:3b",
   topK: 5,
+  renderPoolLimit: 120,
   printTop: 40,
 };
+const ALLOW_PICK_FALLBACK = process.env.WORD_CURATE_PICK_FALLBACK === "1";
 
 function usageAndExit(code = 0) {
   console.log(
@@ -195,7 +197,7 @@ function buildRenderPool(word) {
     "line",
     "--rank",
     "--limit",
-    "1",
+    String(DEFAULTS.renderPoolLimit),
     "--prePadMs",
     "0",
     "--postPadMs",
@@ -260,15 +262,36 @@ function mapDbPicksToRenderPool(word, picks) {
   }
 
   if (missing.length > 0) {
-    throw new Error(
-      `Could not map selected picks to render pool for "${word}": ${missing.join(", ")}.`,
-    );
+    if (!ALLOW_PICK_FALLBACK) {
+      throw new Error(
+        `Could not map selected picks to render pool for "${word}": ${missing.join(", ")}.`,
+      );
+    }
+    // Optional fallback mode for debugging only.
+    for (const miss of missing) {
+      const raw = Number(String(miss).replace(/[^\d]/g, ""));
+      if (Number.isInteger(raw) && raw > 0 && raw <= pool.length && !used.has(raw)) {
+        used.add(raw);
+        renderPicks.push(raw);
+      }
+    }
+    for (let i = 1; i <= pool.length && renderPicks.length < dbPicks.length; i++) {
+      if (used.has(i)) continue;
+      used.add(i);
+      renderPicks.push(i);
+    }
   }
   if (renderPicks.length === 0) {
     throw new Error(`No mapped picks available for "${word}".`);
   }
 
-  return { dbPicks, renderPicks, mappingMode: "mapped_db_to_render_pool" };
+  return {
+    dbPicks,
+    renderPicks,
+    mappingMode:
+      missing.length > 0 ? "mapped_db_to_render_pool_with_fallback" : "mapped_db_to_render_pool",
+    missing,
+  };
 }
 
 function getCurrentPicks(word) {
@@ -367,44 +390,95 @@ function rerenderWithPicks(word, picks, why) {
   const outRoot = getOutRoot();
   const outDir = path.join(outRoot, "work");
   const outputDir = outRoot;
-  const mapped = mapDbPicksToRenderPool(word, picks);
-  const dbPickCsv = mapped.dbPicks.join(",");
-  const renderPickCsv = mapped.renderPicks.join(",");
+  fs.mkdirSync(outDir, { recursive: true });
+  const dbPicks = uniquePositiveInts(picks).slice(0, DEFAULTS.topK);
+  const dbPickCsv = dbPicks.join(",");
   if (!dbPickCsv) throw new Error("No valid picks to render.");
-  if (!renderPickCsv) throw new Error("No mapped render picks available.");
 
-  runOrThrow(process.execPath, [
-    path.join("scripts", "make-vertical-shorts-clean.js"),
-    "--query",
-    word,
-    "--subsDir",
-    DEFAULTS.subsDir,
-    "--enSubsDir",
-    DEFAULTS.enSubsDir,
-    "--videosDir",
-    DEFAULTS.videosDir,
-    "--wordList",
-    DEFAULTS.wordsFile,
-    "--outDir",
-    outDir,
-    "--outputDir",
-    outputDir,
-    "--mode",
-    "line",
-    "--prePadMs",
-    "0",
-    "--postPadMs",
-    "0",
-    "--maxClipMs",
-    "2000",
-    "--longPolicy",
-    "skip",
-    "--limit",
-    String(mapped.renderPicks.length),
-    "--pick",
-    renderPickCsv,
-    "--keepOutputs",
-  ]);
+  let renderPickCsv = dbPickCsv;
+  let mappingMode = "direct_db_candidates";
+  let mappingMissing = [];
+  let candidatesInFile = null;
+
+  const dbRec = loadDbWordRecord(word);
+  if (dbRec && Array.isArray(dbRec.candidates) && dbRec.candidates.length > 0) {
+    const missing = dbPicks.filter((n) => n > dbRec.candidates.length);
+    if (missing.length > 0) {
+      throw new Error(
+        `Selected picks out of range for "${word}" (candidates=${dbRec.candidates.length}): ${missing
+          .map((n) => `#${n}`)
+          .join(", ")}`,
+      );
+    }
+    candidatesInFile = path.join(outDir, `.tmp_candidates_${safeFilename(word)}.json`);
+    fs.writeFileSync(
+      candidatesInFile,
+      `${JSON.stringify(
+        {
+          query: word,
+          source: "db",
+          candidateCount: dbRec.candidates.length,
+          pool: dbRec.candidates,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+  } else {
+    const mapped = mapDbPicksToRenderPool(word, picks);
+    renderPickCsv = mapped.renderPicks.join(",");
+    mappingMode = mapped.mappingMode;
+    mappingMissing = Array.isArray(mapped.missing) ? mapped.missing : [];
+    if (!renderPickCsv) throw new Error("No mapped render picks available.");
+  }
+
+  try {
+    const args = [
+      path.join("scripts", "make-vertical-shorts-clean.js"),
+      "--query",
+      word,
+      "--subsDir",
+      DEFAULTS.subsDir,
+      "--enSubsDir",
+      DEFAULTS.enSubsDir,
+      "--videosDir",
+      DEFAULTS.videosDir,
+      "--wordList",
+      DEFAULTS.wordsFile,
+      "--outDir",
+      outDir,
+      "--outputDir",
+      outputDir,
+      "--mode",
+      "line",
+      "--prePadMs",
+      "0",
+      "--postPadMs",
+      "0",
+      "--maxClipMs",
+      "2000",
+      "--longPolicy",
+      "skip",
+      "--limit",
+      String(dbPicks.length),
+      "--pick",
+      renderPickCsv,
+      "--keepOutputs",
+    ];
+    if (candidatesInFile) {
+      args.push("--candidatesIn", candidatesInFile);
+    }
+    runOrThrow(process.execPath, args);
+  } finally {
+    if (candidatesInFile) {
+      try {
+        fs.unlinkSync(candidatesInFile);
+      } catch {
+        // ignore temp cleanup failures
+      }
+    }
+  }
 
   const slug = safeFilename(word);
   const generated = path.join(outputDir, `${slug}_clean_shorts.mp4`);
@@ -419,12 +493,13 @@ function rerenderWithPicks(word, picks, why) {
     word,
     picks: dbPickCsv,
     renderPicks: renderPickCsv,
-    mappingMode: mapped.mappingMode,
+    mappingMode,
+    mappingMissing,
     why: String(why || "").trim(),
     output: canonical,
   });
   console.log(
-    `[word-curate] picks db=${dbPickCsv} -> render=${renderPickCsv} (${mapped.mappingMode})`,
+    `[word-curate] picks db=${dbPickCsv} -> render=${renderPickCsv} (${mappingMode})`,
   );
   console.log(`[word-curate] output: ${canonical}`);
 }

@@ -28,6 +28,10 @@ const LOG_FILE = path.join(OUT_ROOT, "curation-log.jsonl");
 const PREVIEW_DIR = path.join(OUT_ROOT, "work", "previews");
 const LIVE_POOL_DIR = path.join(OUT_ROOT, "work", "live-pools");
 const FAMILY_MEANINGS_FILE = path.join(ROOT, "source_content", "family-meanings.json");
+const UI_PRE_PAD_MS = Math.max(0, Number(process.env.UI_PRE_PAD_MS || 350));
+const UI_POST_PAD_MS = Math.max(0, Number(process.env.UI_POST_PAD_MS || 550));
+const UI_MAX_CLIP_MS = Math.max(500, Number(process.env.UI_MAX_CLIP_MS || 3200));
+const UI_MIN_PREVIEW_MS = Math.max(200, Number(process.env.UI_MIN_PREVIEW_MS || 1100));
 
 const DEFAULT_JP_SUBS_DIR = path.join(
   ROOT,
@@ -266,11 +270,11 @@ function buildLivePoolForWord(word, family = "") {
     "--limit",
     "1",
     "--prePadMs",
-    "0",
+    String(UI_PRE_PAD_MS),
     "--postPadMs",
-    "0",
+    String(UI_POST_PAD_MS),
     "--maxClipMs",
-    "2000",
+    String(UI_MAX_CLIP_MS),
     "--longPolicy",
     "skip",
     "--dryRun",
@@ -416,7 +420,13 @@ function listWords() {
     const dbRec = dbMap.get(item.word) || null;
 
     const pool = uniquePositiveInts((rerankRec?.top || []).map((x) => x?.candidateIndex));
-    const picks = fillToTopK(manifestRec?.picks || pool, pool);
+    const savedPicks = uniquePositiveInts(manifestRec?.picks || []);
+    const hasRenderedOverride =
+      savedPicks.length > 0 && String(manifestRec?.status || "").toLowerCase() === "rendered";
+    // Use ranked picks by default, but preserve saved manual picks for already-rendered words.
+    const picks = hasRenderedOverride
+      ? fillToTopK(savedPicks, pool.length > 0 ? pool : savedPicks)
+      : fillToTopK(pool, pool);
 
     return {
       idx: item.idx,
@@ -476,17 +486,33 @@ function getWordDetail(word, family = "") {
     ? livePool.length > 0
       ? livePool
       : familyDbPool
-    : livePool;
+    : [];
   const livePoolIndexes = Array.isArray(livePool)
     ? livePool.map((_, i) => i + 1)
     : [];
   const textPoolIndexes = Array.isArray(textPool)
     ? textPool.map((_, i) => i + 1)
     : [];
-  const basePool = familyFilter ? textPoolIndexes : rerankPool.length > 0 ? rerankPool : livePoolIndexes;
-  const picks = familyFilter
-    ? fillToTopK(basePool, basePool)
-    : fillToTopK(manifestRec?.picks || basePool, basePool);
+  const dbIndexes = Array.isArray(dbRec?.candidates)
+    ? dbRec.candidates.map((_, i) => i + 1)
+    : [];
+  const nonFamilyPool =
+    rerankPool.length > 0
+      ? rerankPool
+      : dbIndexes.length > 0
+        ? dbIndexes
+        : livePoolIndexes.length > 0
+          ? livePoolIndexes
+          : [];
+  const basePool = familyFilter ? textPoolIndexes : nonFamilyPool;
+  const savedPicks = uniquePositiveInts(manifestRec?.picks || []);
+  const hasRenderedOverride =
+    !familyFilter &&
+    savedPicks.length > 0 &&
+    String(manifestRec?.status || "").toLowerCase() === "rendered";
+  const picks = hasRenderedOverride
+    ? fillToTopK(savedPicks, basePool.length > 0 ? basePool : savedPicks)
+    : fillToTopK(basePool, basePool);
   const dbCandidateCount = Number(
     dbRec?.candidateCount ||
       (Array.isArray(dbRec?.candidates) ? dbRec.candidates.length : 0),
@@ -494,11 +520,13 @@ function getWordDetail(word, family = "") {
   const rerankCandidateCount = Number(rerankRec?.sourceCandidateCount || 0);
   const effectiveCandidateCount = familyFilter
     ? textPool.length
-    : dbCandidateCount > 0
-      ? dbCandidateCount
-      : rerankCandidateCount > 0
-        ? rerankCandidateCount
-        : livePool.length;
+    : rerankCandidateCount > 0
+      ? rerankCandidateCount
+      : dbCandidateCount > 0
+        ? dbCandidateCount
+        : livePool.length > 0
+          ? livePool.length
+          : 0;
 
   const output =
     String(manifestRec?.output || "").trim() ||
@@ -523,16 +551,18 @@ function getWordDetail(word, family = "") {
       livePoolCount: livePool.length,
       dbCandidateCount,
       rerankCandidateCount,
-      clipsReady: familyFilter ? livePool.length > 0 : false,
+      clipsReady: livePool.length > 0,
       source: familyFilter
         ? livePool.length > 0
           ? "family-live-pool"
           : "family-db-text"
-        : dbCandidateCount > 0
-          ? "db"
-          : rerankCandidateCount > 0
+        : rerankCandidateCount > 0
             ? "rerank"
-            : "live-pool",
+            : dbCandidateCount > 0
+              ? "db"
+              : livePool.length > 0
+                ? "live-pool"
+                : "none",
     },
     notes: log,
   };
@@ -585,11 +615,23 @@ function updateFamilyMeaningOnly(word, family, meaning) {
 
 function candidateFromSources(word, candidateIndex, family = "") {
   const fam = String(family || "").trim();
-  const { dbMap } = getMaps();
-  const dbRec = dbMap.get(word);
   const idx = Number(candidateIndex);
   if (!Number.isInteger(idx) || idx <= 0) return null;
-  if (!fam && dbRec && Array.isArray(dbRec.candidates) && idx <= dbRec.candidates.length) {
+  if (fam) {
+    // Family mode uses family-local indexing; live pool (or family-filtered DB) is authoritative.
+    const livePool = getLivePool(word, fam);
+    if (idx <= livePool.length) return normalizeCandidateRecord(livePool[idx - 1], idx);
+    const { dbMap } = getMaps();
+    const dbRec = dbMap.get(word);
+    const famPool = familyTextPoolFromDb(dbRec, fam);
+    if (idx <= famPool.length) return normalizeCandidateRecord(famPool[idx - 1], idx);
+    return null;
+  }
+
+  // Non-family mode uses DB/rerank candidateIndex semantics.
+  const { dbMap } = getMaps();
+  const dbRec = dbMap.get(word);
+  if (dbRec && Array.isArray(dbRec.candidates) && idx <= dbRec.candidates.length) {
     return normalizeCandidateRecord(dbRec.candidates[idx - 1], idx);
   }
   const livePool = getLivePool(word, fam);
@@ -609,15 +651,26 @@ function ensurePreviewClip(word, candidateIndex, family = "") {
     throw new Error(`Video not found: ${videoFile}`);
   }
 
-  const startSec = Number(candidate.clipStartMs) / 1000;
-  const endSec = Number(candidate.clipEndMs) / 1000;
-  if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || endSec <= startSec) {
+  const rawStartMs = Number(candidate.clipStartMs);
+  const rawEndMs = Number(candidate.clipEndMs);
+  if (!Number.isFinite(rawStartMs) || !Number.isFinite(rawEndMs) || rawEndMs <= rawStartMs) {
     throw new Error(`Invalid clip time range for candidate ${candidateIndex}.`);
   }
+  const startMs = Math.max(0, rawStartMs - UI_PRE_PAD_MS);
+  let endMs = rawEndMs + UI_POST_PAD_MS;
+  if (endMs - startMs < UI_MIN_PREVIEW_MS) {
+    endMs = startMs + UI_MIN_PREVIEW_MS;
+  }
+  if (endMs - startMs > UI_MAX_CLIP_MS) {
+    endMs = startMs + UI_MAX_CLIP_MS;
+  }
+  const startSec = startMs / 1000;
+  const endSec = endMs / 1000;
 
   fs.mkdirSync(PREVIEW_DIR, { recursive: true });
   const familySuffix = fam ? `__f_${safeFilename(fam)}` : "";
-  const outName = `${safeFilename(word)}${familySuffix}__c${String(candidateIndex).padStart(3, "0")}.mp4`;
+  const padSig = `p${UI_PRE_PAD_MS}_${UI_POST_PAD_MS}_${UI_MIN_PREVIEW_MS}_${UI_MAX_CLIP_MS}`;
+  const outName = `${safeFilename(word)}${familySuffix}__${padSig}__c${String(candidateIndex).padStart(3, "0")}.mp4`;
   const outPath = path.join(PREVIEW_DIR, outName);
   if (fs.existsSync(outPath) && fs.statSync(outPath).size > 0) {
     return outPath;
@@ -801,97 +854,215 @@ function upsertManifestWord({ word, picks, reason, output, family }) {
     error: null,
   };
   if (family) next.family = String(family).trim();
-  if (idx >= 0) manifest.words[idx] = { ...manifest.words[idx], ...next };
-  else manifest.words.push(next);
+  if (idx >= 0) {
+    const merged = { ...manifest.words[idx], ...next };
+    if (!family) delete merged.family;
+    manifest.words[idx] = merged;
+  } else {
+    manifest.words.push(next);
+  }
   fs.writeFileSync(MANIFEST_FILE, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+}
+
+async function runPickRender(job, { word, picks, reason = "", family = "", meaning = "" }) {
+  const fam = String(family || "").trim();
+  const m = String(meaning || "").trim();
+  const targetPicks = uniquePositiveInts(picks).slice(0, 5);
+  if (targetPicks.length === 0) {
+    throw new Error("picks required");
+  }
+
+  const pickCsv = targetPicks.join(",");
+
+  // Non-family UI picks use DB/rerank candidateIndex semantics.
+  // Render directly from DB candidate pool so selected indices map 1:1.
+  if (!fam) {
+    const { dbMap } = getMaps();
+    const dbRec = dbMap.get(word) || null;
+    if (!dbRec || !Array.isArray(dbRec.candidates) || dbRec.candidates.length === 0) {
+      throw new Error(`No DB candidates available for "${word}". Build DB before rendering picks.`);
+    }
+    const missing = targetPicks.filter((n) => n > dbRec.candidates.length);
+    if (missing.length > 0) {
+      throw new Error(
+        `Selected picks out of range for "${word}" (candidates=${dbRec.candidates.length}): ${missing
+          .map((n) => `#${n}`)
+          .join(", ")}`,
+      );
+    }
+
+    const pickWorkDir = path.join(OUT_ROOT, "work", "pick-candidates");
+    fs.mkdirSync(pickWorkDir, { recursive: true });
+    const pickPoolFile = path.join(
+      pickWorkDir,
+      `${safeFilename(word)}__${Date.now()}__${process.pid}.json`,
+    );
+    fs.writeFileSync(
+      pickPoolFile,
+      `${JSON.stringify(
+        {
+          query: word,
+          source: "db",
+          candidateCount: dbRec.candidates.length,
+          pool: dbRec.candidates,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    try {
+      const args = [
+        path.join("scripts", "make-vertical-shorts-clean.js"),
+        "--query",
+        word,
+        "--subsDir",
+        DEFAULT_JP_SUBS_DIR,
+        "--videosDir",
+        DEFAULT_VIDEOS_DIR,
+        "--wordList",
+        WORDS_FILE,
+        "--outDir",
+        path.join(OUT_ROOT, "work"),
+        "--outputDir",
+        OUT_ROOT,
+        "--mode",
+        "line",
+        "--prePadMs",
+        String(UI_PRE_PAD_MS),
+        "--postPadMs",
+        String(UI_POST_PAD_MS),
+        "--maxClipMs",
+        String(UI_MAX_CLIP_MS),
+        "--longPolicy",
+        "skip",
+        "--limit",
+        String(Math.min(5, Math.max(1, targetPicks.length))),
+        "--candidatesIn",
+        pickPoolFile,
+        "--pick",
+        pickCsv,
+        "--keepOutputs",
+      ];
+      if (DEFAULT_EN_SUBS_DIR) {
+        args.splice(5, 0, "--enSubsDir", DEFAULT_EN_SUBS_DIR);
+      }
+      if (m) {
+        args.push("--meaning", m);
+      }
+
+      appendJobLog(job, `Pick ${word}: ${pickCsv}`);
+      await runNode(args, job);
+
+      const renderedOut = path.join(OUT_ROOT, `${safeFilename(word)}_clean_shorts.mp4`);
+      const canonical = path.join(OUT_ROOT, `${safeFilename(word)}.mp4`);
+      if (!fs.existsSync(renderedOut)) {
+        throw new Error(`Rendered output not found at ${renderedOut}`);
+      }
+      fs.copyFileSync(renderedOut, canonical);
+      appendJobLog(job, `Copied output -> ${canonical}`);
+
+      upsertManifestWord({
+        word,
+        picks: targetPicks,
+        reason,
+        output: canonical,
+      });
+      return;
+    } finally {
+      try {
+        fs.unlinkSync(pickPoolFile);
+      } catch {
+        // ignore temp cleanup failures
+      }
+    }
+  }
+
+  const args = [
+    path.join("scripts", "make-vertical-shorts-clean.js"),
+    "--query",
+    word,
+    "--subsDir",
+    DEFAULT_JP_SUBS_DIR,
+    "--videosDir",
+    DEFAULT_VIDEOS_DIR,
+    "--wordList",
+    WORDS_FILE,
+    "--outDir",
+    path.join(OUT_ROOT, "work"),
+    "--outputDir",
+    OUT_ROOT,
+    "--mode",
+    "line",
+    "--prePadMs",
+    String(UI_PRE_PAD_MS),
+    "--postPadMs",
+    String(UI_POST_PAD_MS),
+    "--maxClipMs",
+    String(UI_MAX_CLIP_MS),
+    "--longPolicy",
+    "skip",
+    "--limit",
+    String(Math.min(5, Math.max(1, targetPicks.length))),
+    "--pick",
+    pickCsv,
+    "--keepOutputs",
+  ];
+  if (DEFAULT_EN_SUBS_DIR) {
+    args.splice(5, 0, "--enSubsDir", DEFAULT_EN_SUBS_DIR);
+  }
+  if (fam) {
+    args.splice(3, 0, "--matchContains", fam);
+  }
+  if (m) {
+    args.push("--meaning", m);
+  }
+
+  appendJobLog(job, `Pick ${word}${fam ? ` family=${fam}` : ""}: ${pickCsv}`);
+  await runNode(args, job);
+
+  const outputSlug = fam ? `${safeFilename(word)}_${safeFilename(fam)}` : safeFilename(word);
+  const renderedOut = path.join(OUT_ROOT, `${outputSlug}_clean_shorts.mp4`);
+  const canonical = path.join(OUT_ROOT, `${safeFilename(word)}.mp4`);
+  if (!fs.existsSync(renderedOut)) {
+    throw new Error(`Rendered output not found at ${renderedOut}`);
+  }
+  fs.copyFileSync(renderedOut, canonical);
+  appendJobLog(job, `Copied output -> ${canonical}`);
+  upsertManifestWord({
+    word,
+    picks: targetPicks,
+    reason,
+    output: canonical,
+    family: fam,
+  });
 }
 
 function enqueuePick(word, picks, reason, family = "", meaning = "") {
   const fam = String(family || "").trim();
   const m = String(meaning || "").trim();
   return createJob("pick", { word, picks, reason, family: fam || null, meaning: m || null }, async (job) => {
-    const pickCsv = picks.join(",");
-    if (!fam) {
-      const args = [path.join("scripts", "word-curate.js"), "pick", word, pickCsv];
-      if (reason) args.push(reason);
-      appendJobLog(job, `Pick ${word}: ${pickCsv}`);
-      await runNode(args, job);
-      return;
-    }
-
-    const args = [
-      path.join("scripts", "make-vertical-shorts-clean.js"),
-      "--query",
-      word,
-      "--matchContains",
-      fam,
-      "--subsDir",
-      DEFAULT_JP_SUBS_DIR,
-      "--videosDir",
-      DEFAULT_VIDEOS_DIR,
-      "--wordList",
-      WORDS_FILE,
-      "--outDir",
-      path.join(OUT_ROOT, "work"),
-      "--outputDir",
-      OUT_ROOT,
-      "--mode",
-      "line",
-      "--prePadMs",
-      "0",
-      "--postPadMs",
-      "0",
-      "--maxClipMs",
-      "2000",
-      "--longPolicy",
-      "skip",
-      "--limit",
-      String(Math.min(5, Math.max(1, picks.length))),
-      "--pick",
-      pickCsv,
-      "--keepOutputs",
-    ];
-    if (DEFAULT_EN_SUBS_DIR) {
-      args.splice(7, 0, "--enSubsDir", DEFAULT_EN_SUBS_DIR);
-    }
-    if (m) {
-      args.push("--meaning", m);
-    }
-
-    appendJobLog(job, `Pick ${word} family=${fam}: ${pickCsv}`);
-    await runNode(args, job);
-
-    const familyOut = path.join(
-      OUT_ROOT,
-      `${safeFilename(word)}_${safeFilename(fam)}_clean_shorts.mp4`,
-    );
-    const canonical = path.join(OUT_ROOT, `${safeFilename(word)}.mp4`);
-    if (fs.existsSync(familyOut)) {
-      fs.copyFileSync(familyOut, canonical);
-      appendJobLog(job, `Copied family output -> ${canonical}`);
-      try {
-        upsertManifestWord({
-          word,
-          picks,
-          reason,
-          output: canonical,
-          family: fam,
-        });
-      } catch (err) {
-        appendJobLog(job, `Manifest update skipped: ${err?.message || err}`);
-      }
-    } else {
-      appendJobLog(job, `Family output not found at ${familyOut}`);
-    }
+    await runPickRender(job, { word, picks, reason, family: fam, meaning: m });
   });
 }
 
 function enqueueReplace(word, spec, reason) {
   return createJob("replace", { word, spec, reason }, async (job) => {
-    const args = [path.join("scripts", "word-curate.js"), "replace", word, spec];
-    if (reason) args.push(reason);
-    appendJobLog(job, `Replace ${word}: ${spec}`);
-    await runNode(args, job);
+    const m = String(spec || "").trim().match(/^(\d+)\s*=\s*(\d+)$/);
+    if (!m) throw new Error(`Bad replace spec "${spec}"`);
+    const slot = Number(m[1]);
+    const to = Number(m[2]);
+    const detail = getWordDetail(word, "");
+    const picks = uniquePositiveInts(detail?.manifest?.picks || detail?.picks || []).slice(0, 5);
+    if (picks.length === 0) throw new Error(`No current picks for ${word}`);
+    if (slot < 1 || slot > picks.length) throw new Error(`Slot ${slot} out of range`);
+    if (picks.some((v, i) => i !== slot - 1 && v === to)) {
+      throw new Error(`Replace ${spec} would create duplicate picks.`);
+    }
+    picks[slot - 1] = to;
+    appendJobLog(job, `Replace ${word}: ${spec} -> picks=${picks.join(",")}`);
+    await runPickRender(job, { word, picks, reason: String(reason || "").trim() || `replace ${spec}` });
   });
 }
 
