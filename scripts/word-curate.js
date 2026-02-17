@@ -15,6 +15,9 @@ const DEFAULTS = {
   topK: 5,
   renderPoolLimit: 120,
   printTop: 40,
+  prePadMs: 350,
+  postPadMs: 550,
+  maxClipMs: 3200,
 };
 const ALLOW_PICK_FALLBACK = process.env.WORD_CURATE_PICK_FALLBACK === "1";
 
@@ -453,11 +456,11 @@ function rerenderWithPicks(word, picks, why) {
       "--mode",
       "line",
       "--prePadMs",
-      "0",
+      String(DEFAULTS.prePadMs),
       "--postPadMs",
-      "0",
+      String(DEFAULTS.postPadMs),
       "--maxClipMs",
-      "2000",
+      String(DEFAULTS.maxClipMs),
       "--longPolicy",
       "skip",
       "--limit",

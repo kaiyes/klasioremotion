@@ -338,6 +338,50 @@ function svgHighlight(text, match, color, caseInsensitive = false) {
   return `${a}<tspan fill="${color}">${b}</tspan>${c}`;
 }
 
+function wrapTextByUnits(text, maxUnits, maxLines, kind = "en") {
+  const src = String(text || "").trim();
+  if (!src) return [];
+  const lines = [];
+  if (kind === "en") {
+    const words = src.split(/\s+/).filter(Boolean);
+    let line = "";
+    let units = 0;
+    for (const w of words) {
+      const add = line ? ` ${w}` : w;
+      const addUnits = measureUnits(add);
+      if (line && units + addUnits > maxUnits) {
+        lines.push(line);
+        line = w;
+        units = measureUnits(w);
+      } else {
+        line += add;
+        units += addUnits;
+      }
+    }
+    if (line) lines.push(line.trim());
+  } else {
+    let line = "";
+    let units = 0;
+    for (const ch of Array.from(src)) {
+      const u = charUnits(ch);
+      if (line && units + u > maxUnits) {
+        lines.push(line);
+        line = ch;
+        units = u;
+      } else {
+        line += ch;
+        units += u;
+      }
+    }
+    if (line) lines.push(line);
+  }
+  if (lines.length <= maxLines) return lines;
+  const head = lines.slice(0, maxLines);
+  const rest = lines.slice(maxLines).join(kind === "en" ? " " : "");
+  head[maxLines - 1] = `${head[maxLines - 1]} ${rest}`.trim();
+  return head;
+}
+
 function isKanjiChar(ch) {
   return /[一-龯]/.test(ch);
 }
@@ -549,16 +593,57 @@ function buildSegmentOverlaySvg({
   const meaningY = kanjiY + 96 * s;
 
   const subtitleTop = videoBottom + 26 * s;
-  const enY = subtitleTop + 42 * s;
-  const furiY = enY + 56 * s;
-  const jpY = furiY + 54 * s;
-  const romajiY = jpY + 52 * s;
+  const subtitleBottom = height - 42 * s;
+  const maxTextWidth = width - margin * 2;
+  const jpRaw = jpTokens.map((t) => t.surface || "").join("");
+  const jpUnits = Math.max(1, measureUnits(jpRaw));
+  let jpSize = Math.min(54 * s, maxTextWidth / jpUnits);
+  jpSize = Math.max(30 * s, jpSize);
+  let furiSize = Math.max(18 * s, jpSize * 0.56);
 
-  const jpSize = 54 * s;
-  const furiSize = 30 * s;
-  const enSize = 40 * s;
-  const romajiSize = 34 * s;
-  const jpLayout = layoutTokensCentered(jpTokens, width, width - margin * 2, jpSize);
+  const enLines = wrapTextByUnits(enLine || "", 34, 2, "en");
+  const romajiLines = wrapTextByUnits(romajiLine || "", 34, 2, "en");
+  const enLongestUnits = enLines.reduce((m, line) => Math.max(m, measureUnits(line)), 0);
+  const romajiLongestUnits = romajiLines.reduce((m, line) => Math.max(m, measureUnits(line)), 0);
+
+  let enSize = 40 * s;
+  if (enLongestUnits > 0) enSize = Math.min(enSize, maxTextWidth / enLongestUnits);
+  enSize = Math.max(22 * s, enSize);
+
+  let romajiSize = 34 * s;
+  if (romajiLongestUnits > 0) romajiSize = Math.min(romajiSize, maxTextWidth / romajiLongestUnits);
+  romajiSize = Math.max(20 * s, romajiSize);
+
+  const lh = (size) => size * 1.18;
+  const enCount = Math.max(1, enLines.length);
+  const romajiCount = Math.max(1, romajiLines.length);
+  let requiredHeight =
+    enCount * lh(enSize) +
+    lh(furiSize) +
+    lh(jpSize) +
+    romajiCount * lh(romajiSize) +
+    24 * s;
+  const availableHeight = Math.max(200 * s, subtitleBottom - subtitleTop);
+  if (requiredHeight > availableHeight) {
+    const k = Math.max(0.72, availableHeight / requiredHeight);
+    enSize *= k;
+    jpSize *= k;
+    furiSize *= k;
+    romajiSize *= k;
+    requiredHeight =
+      enCount * lh(enSize) +
+      lh(furiSize) +
+      lh(jpSize) +
+      romajiCount * lh(romajiSize) +
+      24 * s;
+  }
+
+  const enStartY = subtitleTop + enSize;
+  const furiY = enStartY + enCount * lh(enSize) + 8 * s;
+  const jpY = furiY + Math.max(26 * s, furiSize + 10 * s);
+  const romajiStartY = jpY + Math.max(30 * s, jpSize + 6 * s);
+
+  const jpLayout = layoutTokensCentered(jpTokens, width, maxTextWidth, jpSize);
   const brandW = 356 * s;
   const brandH = 188 * s;
   const brandX = width - brandW - 24 * s;
@@ -587,8 +672,20 @@ function buildSegmentOverlaySvg({
       return `<text x="${jpLayout[i]?.centerX ?? width / 2}" y="${furiY}" text-anchor="middle" font-family="${fontJP}" font-size="${furiSize}" font-weight="700" fill="${t.color || "#ffffff"}" stroke="#000000" stroke-width="${2 * s}" paint-order="stroke fill">${svgEscape(t.text)}</text>`;
     })
     .join("\n");
-  const romajiText = svgHighlight(romajiLine || "", queryRomaji || "", highlightColor, true);
-  const enText = svgHighlight(enLine || "", queryMeaning || "", highlightColor, true);
+  const enText = enLines
+    .map((line, i) => {
+      const y = enStartY + i * lh(enSize);
+      const lineText = svgHighlight(line, queryMeaning || "", highlightColor, true);
+      return `<text x="50%" y="${y}" text-anchor="middle" font-family="${fontEN}" font-size="${enSize}" font-weight="700" fill="#ffffff" stroke="#000000" stroke-width="${2 * s}" paint-order="stroke fill">${lineText}</text>`;
+    })
+    .join("\n");
+  const romajiText = romajiLines
+    .map((line, i) => {
+      const y = romajiStartY + i * lh(romajiSize);
+      const lineText = svgHighlight(line, queryRomaji || "", highlightColor, true);
+      return `<text x="50%" y="${y}" text-anchor="middle" font-family="${fontEN}" font-size="${romajiSize}" font-weight="700" fill="#ffffff" stroke="#000000" stroke-width="${2 * s}" paint-order="stroke fill">${lineText}</text>`;
+    })
+    .join("\n");
   const brandBlock = `
   <rect x="${brandX}" y="${brandY}" width="${brandW}" height="${brandH}" rx="${14 * s}" ry="${14 * s}" fill="rgba(27,58,48,0.9)" stroke="rgba(198,233,212,0.85)" stroke-width="${2 * s}"/>
   ${logoDataUri ? `<image x="${logoX}" y="${logoY}" width="${logoSize}" height="${logoSize}" href="${logoDataUri}" preserveAspectRatio="xMidYMid meet"/>` : ""}
@@ -607,10 +704,10 @@ function buildSegmentOverlaySvg({
   <text x="50%" y="${kanjiY}" text-anchor="middle" font-family="${fontJP}" font-size="${126 * s}" font-weight="800" fill="#ffd900" stroke="#000000" stroke-width="${4 * s}" paint-order="stroke fill">${svgEscape(query)}</text>
   <text x="50%" y="${meaningY}" text-anchor="middle" font-family="${fontEN}" font-size="${48 * s}" font-weight="800" fill="#1e3a34">${svgEscape(queryMeaning || "Japanese in context")}</text>
   ${brandBlock}
-  <text x="50%" y="${enY}" text-anchor="middle" font-family="${fontEN}" font-size="${enSize}" font-weight="700" fill="#ffffff" stroke="#000000" stroke-width="${2 * s}" paint-order="stroke fill">${enText}</text>
+  ${enText}
   ${furiText}
   ${jpText}
-  <text x="50%" y="${romajiY}" text-anchor="middle" font-family="${fontEN}" font-size="${romajiSize}" font-weight="700" fill="#ffffff" stroke="#000000" stroke-width="${2 * s}" paint-order="stroke fill">${romajiText}</text>
+  ${romajiText}
 </svg>`;
 }
 

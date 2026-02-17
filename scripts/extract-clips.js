@@ -94,6 +94,15 @@ function parseArgs(argv) {
     highlightColor: "&H00D6FF&",
     sentenceGapMs: 800,
     maxSentenceItems: 8,
+    clipFit: true,
+    autoReplaceBad: true,
+    maxJpChars: 34,
+    maxEnChars: 84,
+    maxJpLines: 2,
+    maxEnLines: 2,
+    maxJpCps: 18,
+    maxEnCps: 24,
+    enPolishModel: String(process.env.EN_POLISH_MODEL || "").trim(),
     videoExts: DEFAULT_VIDEO_EXTS,
     verbose: false,
   };
@@ -157,6 +166,46 @@ function parseArgs(argv) {
         break;
       case "maxSentenceItems":
         args.maxSentenceItems = Number(value);
+        takeNext();
+        break;
+      case "clipFit":
+        args.clipFit = true;
+        break;
+      case "noClipFit":
+        args.clipFit = false;
+        break;
+      case "autoReplaceBad":
+        args.autoReplaceBad = true;
+        break;
+      case "noAutoReplaceBad":
+        args.autoReplaceBad = false;
+        break;
+      case "maxJpChars":
+        args.maxJpChars = Number(value);
+        takeNext();
+        break;
+      case "maxEnChars":
+        args.maxEnChars = Number(value);
+        takeNext();
+        break;
+      case "maxJpLines":
+        args.maxJpLines = Number(value);
+        takeNext();
+        break;
+      case "maxEnLines":
+        args.maxEnLines = Number(value);
+        takeNext();
+        break;
+      case "maxJpCps":
+        args.maxJpCps = Number(value);
+        takeNext();
+        break;
+      case "maxEnCps":
+        args.maxEnCps = Number(value);
+        takeNext();
+        break;
+      case "enPolishModel":
+        args.enPolishModel = String(value || "").trim();
         takeNext();
         break;
       case "minClipMs":
@@ -344,6 +393,17 @@ Options:
   --highlightColor      ASS color for highlight (BGR hex, e.g. &H00D6FF&)
   --sentenceGapMs       Max gap between subtitle items to still be the same sentence (default: 800)
   --maxSentenceItems    Max subtitle items to merge into a "sentence" (default: 8)
+  --clipFit             Trim JP/EN to clip-fit clauses around the matched word (default: on)
+  --noClipFit           Disable clip-fit trimming stage
+  --autoReplaceBad      Auto-replace bad picks using next good ranked candidates (default: on)
+  --noAutoReplaceBad    Disable auto replacement
+  --maxJpChars          Readability gate: max JP chars after fit (default: 34)
+  --maxEnChars          Readability gate: max EN chars after fit (default: 84)
+  --maxJpLines          Readability gate: max JP lines after wrap (default: 2)
+  --maxEnLines          Readability gate: max EN lines after wrap (default: 2)
+  --maxJpCps            Readability gate: max JP chars/sec (default: 18)
+  --maxEnCps            Readability gate: max EN chars/sec (default: 24)
+  --enPolishModel       Optional Ollama model to shorten EN as fallback
   --dryRun              Print planned clips / ffmpeg commands, do not run
   --verbose             More logging
 `;
@@ -769,6 +829,9 @@ function shuffleArray(items, seed) {
 
 function toCandidateRecord(item) {
   return {
+    candidateIndex: Number.isInteger(Number(item.candidateIndex))
+      ? Number(item.candidateIndex)
+      : null,
     subFile: item.subFile,
     videoFile: item.videoFile ?? null,
     clipStartMs: item.clipStartMs,
@@ -779,6 +842,11 @@ function toCandidateRecord(item) {
     sentenceText: item.sentenceText,
     enText: item.enText,
     score: item.score,
+    gateReasons: Array.isArray(item.gateReasons) ? [...item.gateReasons] : [],
+    gateMeta: item.gateMeta || null,
+    replacedFrom: Number.isInteger(Number(item.replacedFrom))
+      ? Number(item.replacedFrom)
+      : null,
   };
 }
 
@@ -956,6 +1024,422 @@ function overlapMs(aStart, aEnd, bStart, bEnd) {
 
 function normalizeEnglishText(text) {
   return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeJapaneseText(text) {
+  return String(text || "").replace(/\s+/g, "");
+}
+
+function splitClausesWithSpans(text, kind = "jp") {
+  const src = String(text || "").trim();
+  if (!src) return [];
+  const isDelimiter =
+    kind === "en"
+      ? (ch) => /[.!?;:,，、]/.test(ch)
+      : (ch) => /[。！？!?…、，,;；:：]/.test(ch);
+  const out = [];
+  let start = 0;
+  for (let i = 0; i < src.length; i++) {
+    if (!isDelimiter(src[i])) continue;
+    const end = i + 1;
+    const piece = src.slice(start, end).trim();
+    if (piece) out.push({ text: piece, start, end });
+    start = end;
+  }
+  if (start < src.length) {
+    const piece = src.slice(start).trim();
+    if (piece) out.push({ text: piece, start, end: src.length });
+  }
+  if (out.length === 0) out.push({ text: src, start: 0, end: src.length });
+  return out;
+}
+
+function pickClauseNearAnchor(clauses, anchorIdx, minChars = 6) {
+  if (!Array.isArray(clauses) || clauses.length === 0) return "";
+  let idx = clauses.findIndex((c) => anchorIdx >= c.start && anchorIdx < c.end);
+  if (idx < 0) {
+    idx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < clauses.length; i++) {
+      const mid = (clauses[i].start + clauses[i].end) / 2;
+      const d = Math.abs(mid - anchorIdx);
+      if (d < bestDist) {
+        bestDist = d;
+        idx = i;
+      }
+    }
+  }
+  let left = idx;
+  let right = idx;
+  let merged = clauses[idx].text.trim();
+  const countChars = (s) => Array.from(String(s || "").replace(/\s+/g, "")).length;
+  while (countChars(merged) < minChars && (left > 0 || right < clauses.length - 1)) {
+    const canLeft = left > 0;
+    const canRight = right < clauses.length - 1;
+    if (canLeft && !canRight) {
+      left--;
+    } else if (!canLeft && canRight) {
+      right++;
+    } else {
+      const leftLen = countChars(clauses[left - 1].text);
+      const rightLen = countChars(clauses[right + 1].text);
+      if (rightLen >= leftLen) right++;
+      else left--;
+    }
+    merged = clauses
+      .slice(left, right + 1)
+      .map((c) => c.text.trim())
+      .filter(Boolean)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  return merged;
+}
+
+function trimClauseEdges(text, kind = "jp") {
+  let s = String(text || "").trim();
+  if (!s) return s;
+  if (kind === "en") {
+    s = s.replace(/^[,;:.\-–—\s]+/, "");
+    s = s.replace(/[,;:\-–—\s]+$/, "");
+    return s.trim();
+  }
+  s = s.replace(/^[、。！？!?…・\s]+/, "");
+  s = s.replace(/[、。！？!?…・\s]+$/, "");
+  return s.trim();
+}
+
+function wrapTextByUnits(text, maxUnits, kind = "jp") {
+  const src = String(text || "").trim();
+  if (!src) return [];
+  const lines = [];
+  if (kind === "en") {
+    const words = src.split(/\s+/).filter(Boolean);
+    let line = "";
+    let units = 0;
+    for (const w of words) {
+      const add = line ? ` ${w}` : w;
+      const addUnits = measureUnits(add);
+      if (line && units + addUnits > maxUnits) {
+        lines.push(line);
+        line = w;
+        units = measureUnits(w);
+      } else {
+        line += add;
+        units += addUnits;
+      }
+    }
+    if (line) lines.push(line.trim());
+    return lines;
+  }
+  let line = "";
+  let units = 0;
+  for (const ch of Array.from(src)) {
+    const u = charUnits(ch);
+    if (line && units + u > maxUnits) {
+      lines.push(line);
+      line = ch;
+      units = u;
+    } else {
+      line += ch;
+      units += u;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+function textCps(charCount, durationMs) {
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return 0;
+  return charCount / (durationMs / 1000);
+}
+
+function detectFragment(text, kind = "jp") {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  if (kind === "en") {
+    return (
+      /^[,;:.\-–—]/.test(s) ||
+      /\b(and|but|or|so|then|because)\s*$/i.test(s) ||
+      /^\s*(and|but|or|so|then|because)\b/i.test(s)
+    );
+  }
+  return /^[、。！？!?…・]/.test(s) || /[、・]$/.test(s);
+}
+
+function detectTrailing(text, kind = "jp") {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  if (kind === "en") {
+    return /[,;:\-–—]$/.test(s) || /\b(and|but|or|so|then)\s*$/i.test(s);
+  }
+  return /[、・]$/.test(s) || /(けど|から|ので)$/.test(s);
+}
+
+function extractKanji(text) {
+  return Array.from(String(text || ""))
+    .filter((ch) => isKanjiChar(ch))
+    .join("");
+}
+
+function hasSenseMatchByLemma(tokenizer, jpText, query, matcher) {
+  if (!tokenizer) return true;
+  const source = normalizeJapaneseText(jpText);
+  if (!source) return false;
+  const queryText = String(query || "").trim();
+  const forms = new Set([queryText, ...(matcher?.forms || [])].map((x) => String(x || "").trim()));
+  forms.delete("");
+  const queryKanji = extractKanji(queryText);
+  const tokens = tokenizer.tokenize(source);
+  for (const t of tokens) {
+    const surf = String(t?.surface_form || "").trim();
+    const base = String(t?.basic_form && t.basic_form !== "*" ? t.basic_form : surf).trim();
+    const cand = [surf, base];
+    for (const v of cand) {
+      if (!v) continue;
+      if (forms.has(v)) {
+        if (!queryKanji) return true;
+        const vKanji = extractKanji(v);
+        if (vKanji && (vKanji.includes(queryKanji) || queryKanji.includes(vKanji))) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function clipFitCandidateText(item, args, matcher) {
+  const rawJp = normalizeJapaneseText(item.sentenceText || "");
+  const rawEn = normalizeEnglishText(item.enText || "");
+  if (!rawJp) {
+    return {
+      jpText: String(item.sentenceText || ""),
+      enText: rawEn,
+      fitMeta: { applied: false },
+    };
+  }
+
+  const matchTerm = String(item.matchText || "").trim();
+  const anchors = Array.from(
+    new Set(
+      [matchTerm, args.query, ...(matcher?.forms || [])]
+        .map((x) => normalizeJapaneseText(String(x || "")))
+        .filter(Boolean),
+    ),
+  );
+  let anchorIdx = -1;
+  let anchorLen = 0;
+  for (const a of anchors) {
+    const idx = rawJp.indexOf(a);
+    if (idx >= 0) {
+      anchorIdx = idx;
+      anchorLen = a.length;
+      break;
+    }
+  }
+  if (anchorIdx < 0) {
+    anchorIdx = Math.floor(rawJp.length / 2);
+    anchorLen = 1;
+  }
+  const ratio = Math.max(0, Math.min(1, (anchorIdx + anchorLen / 2) / Math.max(1, rawJp.length)));
+
+  const jpClauses = splitClausesWithSpans(rawJp, "jp");
+  const enClauses = splitClausesWithSpans(rawEn, "en");
+
+  let jpText = pickClauseNearAnchor(jpClauses, anchorIdx, 6);
+  if (!jpText) jpText = rawJp;
+  jpText = trimClauseEdges(jpText, "jp");
+
+  let enText = rawEn;
+  if (enClauses.length > 0) {
+    const enAnchor = Math.round(ratio * Math.max(0, rawEn.length - 1));
+    enText = pickClauseNearAnchor(enClauses, enAnchor, 10) || rawEn;
+    enText = trimClauseEdges(enText, "en");
+  }
+
+  return {
+    jpText: jpText || rawJp,
+    enText: enText || "",
+    fitMeta: {
+      applied: true,
+      jpRatio: ratio,
+      jpClauses: jpClauses.length,
+      enClauses: enClauses.length,
+    },
+  };
+}
+
+function evaluateCandidateQuality(item, args, gateCtx) {
+  const reasons = [];
+  const durationMs = Math.max(1, Number(item.clipEndMs) - Number(item.clipStartMs));
+  const jpText = normalizeJapaneseText(item.sentenceText || "");
+  const enText = normalizeEnglishText(item.enText || "");
+  const jpChars = Array.from(jpText).length;
+  const enChars = Array.from(enText.replace(/\s+/g, "")).length;
+  const jpCps = textCps(jpChars, durationMs);
+  const enCps = textCps(enChars, durationMs);
+  const jpLines = wrapTextByUnits(jpText, 18, "jp");
+  const enLines = wrapTextByUnits(enText, 34, "en");
+
+  if (!hasSenseMatchByLemma(gateCtx?.tokenizer || null, jpText, args.query, gateCtx?.matcher)) {
+    reasons.push("wrong_sense");
+  }
+  if (detectFragment(jpText, "jp") || detectFragment(enText, "en")) reasons.push("fragment");
+  if (detectTrailing(jpText, "jp") || detectTrailing(enText, "en")) reasons.push("trailing");
+
+  const overflow =
+    jpChars > args.maxJpChars ||
+    enChars > args.maxEnChars ||
+    jpLines.length > args.maxJpLines ||
+    enLines.length > args.maxEnLines ||
+    jpCps > args.maxJpCps ||
+    enCps > args.maxEnCps;
+  if (overflow) reasons.push("overflow");
+
+  return {
+    ok: reasons.length === 0,
+    reasons: Array.from(new Set(reasons)),
+    meta: {
+      durationMs,
+      jpChars,
+      enChars,
+      jpCps: Number(jpCps.toFixed(2)),
+      enCps: Number(enCps.toFixed(2)),
+      jpLines: jpLines.length,
+      enLines: enLines.length,
+    },
+  };
+}
+
+function polishEnglishWithOllama({ model, enText, jpText, query }) {
+  const m = String(model || "").trim();
+  const src = normalizeEnglishText(enText);
+  if (!m || !src) return "";
+  const prompt = [
+    "Rewrite this English subtitle into ONE short natural clause.",
+    "Rules:",
+    "- Keep the original meaning.",
+    "- No trailing continuation fragments.",
+    "- Max 70 characters.",
+    "- Return only the rewritten line, no quotes or explanations.",
+    `Japanese: ${jpText}`,
+    `Target word: ${query}`,
+    `English: ${src}`,
+  ].join("\n");
+  const res = spawnSync("ollama", ["run", m, prompt], {
+    encoding: "utf8",
+    timeout: 25000,
+    maxBuffer: 1024 * 1024 * 8,
+  });
+  if (res.status !== 0) return "";
+  const out = String(res.stdout || "")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((x) => x.trim())
+    .filter(Boolean)[0];
+  if (!out) return "";
+  return normalizeEnglishText(out).replace(/^["'`]|["'`]$/g, "");
+}
+
+function fitAndGateCandidate(item, args, gateCtx) {
+  let cand = { ...item };
+  const fit = args.clipFit ? clipFitCandidateText(cand, args, gateCtx?.matcher) : null;
+  if (fit) {
+    cand.sentenceText = fit.jpText;
+    cand.enText = fit.enText;
+    cand.fitMeta = fit.fitMeta;
+  }
+  let quality = evaluateCandidateQuality(cand, args, gateCtx);
+
+  if (
+    args.enPolishModel &&
+    cand.enText &&
+    quality.reasons.some((r) => r === "overflow" || r === "fragment" || r === "trailing")
+  ) {
+    const polished = polishEnglishWithOllama({
+      model: args.enPolishModel,
+      enText: cand.enText,
+      jpText: cand.sentenceText,
+      query: args.query,
+    });
+    if (polished) {
+      const withPolish = { ...cand, enText: polished, enTextPolished: true };
+      const q2 = evaluateCandidateQuality(withPolish, args, gateCtx);
+      if (
+        q2.reasons.length < quality.reasons.length ||
+        (q2.ok && !quality.ok)
+      ) {
+        cand = withPolish;
+        quality = q2;
+      }
+    }
+  }
+
+  cand.gateReasons = quality.reasons;
+  cand.gateMeta = quality.meta;
+  return { candidate: cand, quality };
+}
+
+function applyQualityGatesAndAutoReplace(selected, pool, args, gateCtx) {
+  if (!Array.isArray(selected) || selected.length === 0) {
+    return { selected: [], audit: [] };
+  }
+  const out = selected.map((x) => ({ ...x }));
+  const used = new Set(out.map((x) => Number(x.candidateIndex)).filter((n) => Number.isInteger(n)));
+  const audit = [];
+
+  for (let i = 0; i < out.length; i++) {
+    const slot = i + 1;
+    const current = out[i];
+    const currentEval = fitAndGateCandidate(current, args, gateCtx);
+    out[i] = currentEval.candidate;
+    const fromIdx = Number(current.candidateIndex) || null;
+    if (currentEval.quality.ok || !args.autoReplaceBad) {
+      audit.push({
+        slot,
+        kept: true,
+        from: fromIdx,
+        to: Number(out[i].candidateIndex) || fromIdx,
+        reasons: currentEval.quality.reasons,
+      });
+      continue;
+    }
+
+    let replacement = null;
+    for (const cand of pool) {
+      const idx = Number(cand.candidateIndex);
+      if (!Number.isInteger(idx) || used.has(idx)) continue;
+      const ev = fitAndGateCandidate(cand, args, gateCtx);
+      if (!ev.quality.ok) continue;
+      replacement = ev;
+      break;
+    }
+
+    if (replacement) {
+      const toIdx = Number(replacement.candidate.candidateIndex) || null;
+      if (fromIdx && used.has(fromIdx)) used.delete(fromIdx);
+      if (toIdx) used.add(toIdx);
+      replacement.candidate.replacedFrom = fromIdx;
+      out[i] = replacement.candidate;
+      audit.push({
+        slot,
+        kept: false,
+        from: fromIdx,
+        to: toIdx,
+        reasons: currentEval.quality.reasons,
+      });
+    } else {
+      audit.push({
+        slot,
+        kept: true,
+        from: fromIdx,
+        to: Number(out[i].candidateIndex) || fromIdx,
+        reasons: currentEval.quality.reasons,
+      });
+    }
+  }
+
+  return { selected: out, audit };
 }
 
 function findEnglishForTime(enItems, startMs, endMs, opts = {}) {
@@ -2311,6 +2795,10 @@ async function main() {
   if (!usingCandidatesIn) {
     pool = uniqueBySentence(pool);
   }
+  pool = pool.map((item, idx) => ({
+    ...item,
+    candidateIndex: idx + 1,
+  }));
 
   let selectionPool = pool;
   let shuffleSeedUsed = null;
@@ -2379,7 +2867,7 @@ async function main() {
     });
   }
 
-  let selected = selectionPool.slice(0, args.limit);
+  let selected = selectionPool.slice(0, args.limit).map((x) => ({ ...x }));
   if (args.pick) {
     const picks = parsePickList(args.pick);
     const seenPick = new Set();
@@ -2393,11 +2881,43 @@ async function main() {
         throw new Error(`--pick contains duplicate sentence at index #${pos}.`);
       }
       seenPick.add(key);
-      return item;
+      return { ...item };
     });
   }
 
   selected = applyReplaceRules(selected, pool, args.replace);
+  selected = selected.map((x) => ({ ...x }));
+
+  const gateAudit = [];
+  if (args.clipFit || args.autoReplaceBad || args.enPolishModel) {
+    const dicPath = path.join("node_modules", "kuromoji", "dict");
+    let gateTokenizer = null;
+    try {
+      gateTokenizer = await buildTokenizer(dicPath);
+    } catch (err) {
+      if (args.verbose) {
+        console.log(`Gate tokenizer init failed; continuing without lemma lock: ${err?.message || err}`);
+      }
+    }
+    const gated = applyQualityGatesAndAutoReplace(selected, pool, args, {
+      matcher: queryMatcher,
+      tokenizer: gateTokenizer,
+    });
+    selected = gated.selected;
+    gateAudit.push(...gated.audit);
+    for (const a of gateAudit) {
+      const from = Number.isInteger(Number(a.from)) ? `#${a.from}` : "(n/a)";
+      const to = Number.isInteger(Number(a.to)) ? `#${a.to}` : "(n/a)";
+      const reasons = Array.isArray(a.reasons) && a.reasons.length > 0 ? a.reasons.join(",") : "none";
+      if (a.kept) {
+        if (reasons !== "none") {
+          console.log(`[gate] slot${a.slot} kept ${from} reasons=${reasons}`);
+        }
+      } else {
+        console.log(`[gate] slot${a.slot} auto-replaced ${from} -> ${to} reasons=${reasons}`);
+      }
+    }
+  }
 
   if (args.candidatesOut) {
     writeJsonFile(args.candidatesOut, {
@@ -2413,15 +2933,16 @@ async function main() {
         mode: args.mode,
         limit: args.limit,
       },
-      stats: {
-        plannedCount: planned.length,
-        poolCount: pool.length,
-        selectedCount: selected.length,
-      },
-      planned: planned.map(toCandidateRecord),
-      pool: pool.map(toCandidateRecord),
-      selected: selected.map(toCandidateRecord),
-    });
+        stats: {
+          plannedCount: planned.length,
+          poolCount: pool.length,
+          selectedCount: selected.length,
+        },
+        gateAudit,
+        planned: planned.map(toCandidateRecord),
+        pool: pool.map(toCandidateRecord),
+        selected: selected.map(toCandidateRecord),
+      });
   }
 
   const querySlug = safeFilename(args.query);
