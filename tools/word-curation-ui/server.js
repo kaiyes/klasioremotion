@@ -210,8 +210,10 @@ function dbRankedIndexPool(dbRec) {
       };
     })
     .sort((a, b) => {
-      if (a.rank !== b.rank) return a.rank - b.rank;
+      // In fallback mode we want strongest candidates first.
+      // Score is the primary ordering; rank is only a tie-breaker.
       if (a.score !== b.score) return b.score - a.score;
+      if (a.rank !== b.rank) return a.rank - b.rank;
       return a.idx - b.idx;
     })
     .map((x) => x.idx);
