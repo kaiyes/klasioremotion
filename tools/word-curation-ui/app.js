@@ -281,6 +281,11 @@ function reviewCandidateSummary(row) {
   return `candidates=${eff} source=${source || "unknown"} live=${live} db=${db} rerank=${rr} clips=${clipsReady ? "ready" : "not-cut"}`;
 }
 
+function numOr(raw, fallback = 0) {
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function reviewRowKey(word, family = "") {
   return `${String(word || "").trim()}::${String(family || "").trim()}`;
 }
@@ -367,12 +372,14 @@ function buildReviewRows(baseRows, details, familyPref = new Map(), clipReadyPre
       : fillToTopK(Array.isArray(d.picks) ? d.picks : r.picks || [], mapIndexes);
     const dbLen = Array.isArray(d?.db?.candidates) ? d.db.candidates.length : 0;
     const liveLen = Array.isArray(d?.livePool) ? d.livePool.length : 0;
-    const candMax = Math.max(
-      dbLen,
-      liveLen,
-      ...picks.map((x) => Number(x) || 0),
-      1,
-    );
+    const candMax = familyMode
+      ? Math.max(...mapIndexes, 0)
+      : Math.max(
+          dbLen,
+          liveLen,
+          ...picks.map((x) => Number(x) || 0),
+          1,
+        );
     const key = reviewRowKey(r.word, family);
     const clipsReady =
       Boolean(clipReadyPref[key]) || Boolean(d?.candidateStats?.clipsReady);
@@ -387,10 +394,10 @@ function buildReviewRows(baseRows, details, familyPref = new Map(), clipReadyPre
       familyForms: forms,
       meaningDraft: String(d?.meta?.meaning || r.meaning || ""),
       candidateStats: {
-        effectiveCount: Number(d?.candidateStats?.effectiveCount || candMax),
-        livePoolCount: Number(d?.candidateStats?.livePoolCount || liveLen || 0),
-        dbCandidateCount: Number(d?.candidateStats?.dbCandidateCount || dbLen || 0),
-        rerankCandidateCount: Number(d?.candidateStats?.rerankCandidateCount || 0),
+        effectiveCount: numOr(d?.candidateStats?.effectiveCount, candMax),
+        livePoolCount: numOr(d?.candidateStats?.livePoolCount, liveLen || 0),
+        dbCandidateCount: numOr(d?.candidateStats?.dbCandidateCount, dbLen || 0),
+        rerankCandidateCount: numOr(d?.candidateStats?.rerankCandidateCount, 0),
         clipsReady,
         source: String(d?.candidateStats?.source || ""),
       },
@@ -541,15 +548,17 @@ async function reloadReviewRowForFamily(row) {
   row.candidateMap = map;
   const dbLen = Array.isArray(d?.db?.candidates) ? d.db.candidates.length : 0;
   const liveLen = Array.isArray(d?.livePool) ? d.livePool.length : 0;
-  row.candidateMax = Math.max(dbLen, liveLen, ...picks.map((x) => Number(x) || 0), 1);
+  row.candidateMax = familyMode
+    ? Math.max(...mapIndexes, 0)
+    : Math.max(dbLen, liveLen, ...picks.map((x) => Number(x) || 0), 1);
   const key = reviewRowKey(row.word, family);
   const clipsReady =
     Boolean(state.reviewClipReady[key]) || Boolean(d?.candidateStats?.clipsReady);
   row.candidateStats = {
-    effectiveCount: Number(d?.candidateStats?.effectiveCount || row.candidateMax),
-    livePoolCount: Number(d?.candidateStats?.livePoolCount || liveLen || 0),
-    dbCandidateCount: Number(d?.candidateStats?.dbCandidateCount || dbLen || 0),
-    rerankCandidateCount: Number(d?.candidateStats?.rerankCandidateCount || 0),
+    effectiveCount: numOr(d?.candidateStats?.effectiveCount, row.candidateMax),
+    livePoolCount: numOr(d?.candidateStats?.livePoolCount, liveLen || 0),
+    dbCandidateCount: numOr(d?.candidateStats?.dbCandidateCount, dbLen || 0),
+    rerankCandidateCount: numOr(d?.candidateStats?.rerankCandidateCount, 0),
     clipsReady,
     source: String(d?.candidateStats?.source || ""),
   };
@@ -679,9 +688,16 @@ function renderReviewGrid() {
     meaningRow.appendChild(saveMeaningBtn);
 
     const slotGrid = card.querySelector(".review-slot-grid");
-    const slotLimit = String(row.family || "").trim()
-      ? Math.max(1, Math.min(TOP_K, Number(row?.candidateStats?.effectiveCount || row?.slots?.length || 0)))
+    const familyModeSlots = Boolean(String(row.family || "").trim());
+    const slotLimit = familyModeSlots
+      ? Math.max(0, Math.min(TOP_K, numOr(row?.candidateStats?.effectiveCount, row?.slots?.length || 0)))
       : TOP_K;
+    if (familyModeSlots && slotLimit === 0) {
+      const none = document.createElement("div");
+      none.className = "muted";
+      none.textContent = "No candidates found for this family form in subtitle text.";
+      slotGrid.appendChild(none);
+    }
     for (let i = 0; i < slotLimit; i++) {
       const slot = row.slots[i] || {
         slot: i + 1,
