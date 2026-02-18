@@ -186,7 +186,11 @@ function filterWords() {
   const sf = el.statusFilter.value;
   return state.words.filter((w) => {
     const qOk = !q || String(w.word).toLowerCase().includes(q);
-    const sOk = sf === "all" || String(w.status) === sf;
+    const ws = String(w.status || "");
+    const sOk =
+      sf === "all" ||
+      ws === sf ||
+      (sf === "rank:error" && ws.startsWith("rank:error"));
     return qOk && sOk;
   });
 }

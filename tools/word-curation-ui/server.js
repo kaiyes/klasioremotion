@@ -195,6 +195,28 @@ function fillToTopK(picks, pool, topK = 5) {
   return out.slice(0, topK);
 }
 
+function dbRankedIndexPool(dbRec) {
+  const rows = Array.isArray(dbRec?.candidates) ? dbRec.candidates : [];
+  if (rows.length === 0) return [];
+  return rows
+    .map((rec, i) => {
+      const idx = i + 1;
+      const rank = Number(rec?.rank);
+      const score = Number(rec?.score);
+      return {
+        idx,
+        rank: Number.isFinite(rank) && rank > 0 ? rank : idx,
+        score: Number.isFinite(score) ? score : -Infinity,
+      };
+    })
+    .sort((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      if (a.score !== b.score) return b.score - a.score;
+      return a.idx - b.idx;
+    })
+    .map((x) => x.idx);
+}
+
 function msToFfmpegTime(ms) {
   const n = Math.max(0, Number(ms) || 0);
   const totalMs = Math.round(n);
@@ -404,7 +426,12 @@ function getMaps() {
 
 function deriveWordStatus(manifestRec, rerankRec, dbRec) {
   if (manifestRec?.status) return String(manifestRec.status);
-  if (rerankRec?.status) return `rank:${String(rerankRec.status)}`;
+  if (rerankRec?.status) {
+    const rs = String(rerankRec.status);
+    const hasTop = Array.isArray(rerankRec?.top) && rerankRec.top.length > 0;
+    if (rs === "error" && dbRec && !hasTop) return "rank:error(db-fallback)";
+    return `rank:${rs}`;
+  }
   if (dbRec?.missing) return "missing";
   if (dbRec) return "built";
   return "new";
@@ -420,13 +447,14 @@ function listWords() {
     const dbRec = dbMap.get(item.word) || null;
 
     const pool = uniquePositiveInts((rerankRec?.top || []).map((x) => x?.candidateIndex));
+    const dbPool = dbRankedIndexPool(dbRec);
     const savedPicks = uniquePositiveInts(manifestRec?.picks || []);
     const hasRenderedOverride =
       savedPicks.length > 0 && String(manifestRec?.status || "").toLowerCase() === "rendered";
     // Use ranked picks by default, but preserve saved manual picks for already-rendered words.
     const picks = hasRenderedOverride
-      ? fillToTopK(savedPicks, pool.length > 0 ? pool : savedPicks)
-      : fillToTopK(pool, pool);
+      ? fillToTopK(savedPicks, pool.length > 0 ? pool : dbPool.length > 0 ? dbPool : savedPicks)
+      : fillToTopK(pool.length > 0 ? pool : dbPool, pool.length > 0 ? pool : dbPool);
 
     return {
       idx: item.idx,
@@ -493,9 +521,7 @@ function getWordDetail(word, family = "") {
   const textPoolIndexes = Array.isArray(textPool)
     ? textPool.map((_, i) => i + 1)
     : [];
-  const dbIndexes = Array.isArray(dbRec?.candidates)
-    ? dbRec.candidates.map((_, i) => i + 1)
-    : [];
+  const dbIndexes = dbRankedIndexPool(dbRec);
   const nonFamilyPool =
     rerankPool.length > 0
       ? rerankPool
@@ -556,8 +582,12 @@ function getWordDetail(word, family = "") {
         ? livePool.length > 0
           ? "family-live-pool"
           : "family-db-text"
-        : rerankCandidateCount > 0
+        : rerankPool.length > 0
             ? "rerank"
+            : rerankCandidateCount > 0 && dbCandidateCount > 0
+              ? "rerank-empty-db-fallback"
+              : rerankCandidateCount > 0
+                ? "rerank-empty"
             : dbCandidateCount > 0
               ? "db"
               : livePool.length > 0
