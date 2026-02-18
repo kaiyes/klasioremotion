@@ -973,6 +973,7 @@ async function runPickRender(job, { word, picks, reason = "", family = "", meani
         pickPoolFile,
         "--pick",
         pickCsv,
+        "--noAutoReplaceBad",
         "--keepOutputs",
       ];
       if (DEFAULT_EN_SUBS_DIR) {
@@ -1037,6 +1038,7 @@ async function runPickRender(job, { word, picks, reason = "", family = "", meani
     String(Math.min(5, Math.max(1, targetPicks.length))),
     "--pick",
     pickCsv,
+    "--noAutoReplaceBad",
     "--keepOutputs",
   ];
   if (DEFAULT_EN_SUBS_DIR) {
