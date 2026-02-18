@@ -52,6 +52,7 @@ function parseArgs(argv) {
     candidatesIn: null,
     pick: null,
     replace: [],
+    autoReplaceBad: true,
     meaning: null,
     familyMeaningsFile: DEFAULT_FAMILY_MEANINGS_FILE,
     mode: "line",
@@ -168,6 +169,12 @@ function parseArgs(argv) {
         args.replace.push(String(v));
         takeNext();
         break;
+      case "autoReplaceBad":
+        args.autoReplaceBad = true;
+        break;
+      case "noAutoReplaceBad":
+        args.autoReplaceBad = false;
+        break;
       case "meaning":
         args.meaning = v;
         takeNext();
@@ -229,6 +236,7 @@ Options:
   --candidatesIn <file>      Use provided candidates JSON (array or {pool:[...]})
   --pick <list>              Pick ranked indices, e.g. "1,2,7,9,11"
   --replace <a=b>            Replace picked slot with ranked index, e.g. "3=12"
+  --noAutoReplaceBad         Keep selected picks exactly (disable gate auto-swap)
   --meaning <text>           Override meaning shown on top card
   --familyMeaningsFile <f>   Saved family->meaning map (default: source_content/family-meanings.json)
   --prePadMs <n>             Passed to extractor (default: 1500)
@@ -905,6 +913,7 @@ async function main() {
   if (args.candidatesIn) extractArgs.push("--candidatesIn", args.candidatesIn);
   if (args.pick) extractArgs.push("--pick", args.pick);
   for (const r of args.replace) extractArgs.push("--replace", r);
+  if (!args.autoReplaceBad) extractArgs.push("--noAutoReplaceBad");
   if (args.verbose) extractArgs.push("--verbose");
 
   console.log("Step 1/2: Extracting clean stitched clip...");
