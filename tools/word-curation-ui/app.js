@@ -589,6 +589,12 @@ async function saveRowMeaningIfNeeded(row) {
   return true;
 }
 
+function rowMeaningForRender(row) {
+  const draft = String(row?.meaningDraft ?? "").trim();
+  if (draft) return draft;
+  return String(row?.meaning ?? "").trim();
+}
+
 function renderReviewGrid() {
   const rows = Array.isArray(state.reviewRows) ? state.reviewRows : [];
   el.reviewGrid.innerHTML = "";
@@ -741,7 +747,7 @@ function renderReviewGrid() {
         {
           word: row.word,
           family: row.family || "",
-          meaning: String(row.meaning || "").trim(),
+          meaning: rowMeaningForRender(row),
           picks: picks.slice(0, TOP_K),
           reason,
         },
@@ -812,7 +818,7 @@ function renderReviewGrid() {
         {
           word: row.word,
           family: row.family || "",
-          meaning: String(row.meaning || "").trim(),
+          meaning: rowMeaningForRender(row),
           picks: picks.slice(0, TOP_K),
           reason,
         },
