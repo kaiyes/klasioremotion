@@ -340,6 +340,8 @@ function applyReviewRowPicks(row, picks) {
       reason: String(prev?.reason || ""),
       badTags: Array.isArray(prev?.badTags) ? [...prev.badTags] : [],
       locked: Boolean(prev?.locked),
+      prePadMs: String(prev?.prePadMs ?? ""),
+      postPadMs: String(prev?.postPadMs ?? ""),
     };
   });
 }
@@ -393,6 +395,8 @@ function buildReviewRows(baseRows, details, familyPref = new Map(), clipReadyPre
       family,
       familyForms: forms,
       meaningDraft: String(d?.meta?.meaning || r.meaning || ""),
+      prePadMs: "",
+      postPadMs: "",
       candidateStats: {
         effectiveCount: numOr(d?.candidateStats?.effectiveCount, candMax),
         livePoolCount: numOr(d?.candidateStats?.livePoolCount, liveLen || 0),
@@ -411,6 +415,8 @@ function buildReviewRows(baseRows, details, familyPref = new Map(), clipReadyPre
         reason: "",
         badTags: [],
         locked: false,
+        prePadMs: "",
+        postPadMs: "",
       })),
     };
   });
@@ -439,6 +445,11 @@ function renderReviewSlotCard(row, slot) {
       <input type="number" min="1" step="1" value="${Number(slot.candidateIndex) || slot.slot}" />
       <button class="btn btn-small" data-next="1">Next</button>
     </div>
+    <div class="review-slot-pad-inputs">
+      <span class="muted">pad</span>
+      <input type="number" min="0" step="10" placeholder="pre" value="${escapeHtml(String(slot.prePadMs ?? ""))}" data-slot-prepad="1" />
+      <input type="number" min="0" step="10" placeholder="post" value="${escapeHtml(String(slot.postPadMs ?? ""))}" data-slot-postpad="1" />
+    </div>
     <label class="slot-toggle"><input type="checkbox" ${slot.locked ? "checked" : ""}/> Lock</label>
     <div class="review-slot-tags"></div>
     <textarea rows="2" placeholder="why bad / why replace?"></textarea>
@@ -465,6 +476,19 @@ function renderReviewSlotCard(row, slot) {
   lockCb.addEventListener("change", () => {
     slot.locked = lockCb.checked;
   });
+
+  const slotPrePadInput = wrap.querySelector('input[data-slot-prepad]');
+  if (slotPrePadInput) {
+    slotPrePadInput.addEventListener("input", () => {
+      slot.prePadMs = slotPrePadInput.value;
+    });
+  }
+  const slotPostPadInput = wrap.querySelector('input[data-slot-postpad]');
+  if (slotPostPadInput) {
+    slotPostPadInput.addEventListener("input", () => {
+      slot.postPadMs = slotPostPadInput.value;
+    });
+  }
 
   const setCandidate = (value) => {
     let n = clampInt(value, 1, Math.max(row.candidateMax, Number(value) || 1));
@@ -571,6 +595,8 @@ async function reloadReviewRowForFamily(row) {
       reason: String(prev?.reason || ""),
       badTags: Array.isArray(prev?.badTags) ? [...prev.badTags] : [],
       locked: Boolean(prev?.locked),
+      prePadMs: String(prev?.prePadMs ?? ""),
+      postPadMs: String(prev?.postPadMs ?? ""),
     };
   });
 }
@@ -593,6 +619,33 @@ function rowMeaningForRender(row) {
   const draft = String(row?.meaningDraft ?? "").trim();
   if (draft) return draft;
   return String(row?.meaning ?? "").trim();
+}
+
+function rowPadMsForRender(row) {
+  const preRaw = String(row?.prePadMs ?? "").trim();
+  const postRaw = String(row?.postPadMs ?? "").trim();
+  const pre = preRaw === "" ? null : Math.max(0, Math.trunc(Number(preRaw) || 0));
+  const post = postRaw === "" ? null : Math.max(0, Math.trunc(Number(postRaw) || 0));
+  return { prePadMs: pre, postPadMs: post };
+}
+
+function rowSlotPadsForRender(row, picks) {
+  const pickSet = new Set(uniquePositiveInts(picks || []));
+  const slots = Array.isArray(row?.slots) ? row.slots : [];
+  const out = [];
+  for (const slot of slots) {
+    const idx = Number(slot?.candidateIndex || 0);
+    if (!pickSet.has(idx)) continue;
+    const preRaw = String(slot?.prePadMs ?? "").trim();
+    const postRaw = String(slot?.postPadMs ?? "").trim();
+    if (preRaw === "" && postRaw === "") continue;
+    out.push({
+      candidateIndex: idx,
+      prePadMs: preRaw === "" ? null : Math.max(0, Math.trunc(Number(preRaw) || 0)),
+      postPadMs: postRaw === "" ? null : Math.max(0, Math.trunc(Number(postRaw) || 0)),
+    });
+  }
+  return out;
 }
 
 function renderReviewGrid() {
@@ -692,6 +745,32 @@ function renderReviewGrid() {
     meaningRow.appendChild(meaningLabel);
     meaningRow.appendChild(meaningInput);
     meaningRow.appendChild(saveMeaningBtn);
+    const padLabel = document.createElement("span");
+    padLabel.className = "muted";
+    padLabel.textContent = "pad ms";
+    const prePadInput = document.createElement("input");
+    prePadInput.type = "number";
+    prePadInput.min = "0";
+    prePadInput.step = "10";
+    prePadInput.placeholder = "pre";
+    prePadInput.value = String(row.prePadMs ?? "");
+    prePadInput.className = "pad-input";
+    prePadInput.addEventListener("input", () => {
+      row.prePadMs = prePadInput.value;
+    });
+    const postPadInput = document.createElement("input");
+    postPadInput.type = "number";
+    postPadInput.min = "0";
+    postPadInput.step = "10";
+    postPadInput.placeholder = "post";
+    postPadInput.value = String(row.postPadMs ?? "");
+    postPadInput.className = "pad-input";
+    postPadInput.addEventListener("input", () => {
+      row.postPadMs = postPadInput.value;
+    });
+    meaningRow.appendChild(padLabel);
+    meaningRow.appendChild(prePadInput);
+    meaningRow.appendChild(postPadInput);
 
     const slotGrid = card.querySelector(".review-slot-grid");
     const familyModeSlots = Boolean(String(row.family || "").trim());
@@ -711,6 +790,8 @@ function renderReviewGrid() {
         reason: "",
         badTags: [],
         locked: false,
+        prePadMs: "",
+        postPadMs: "",
       };
       row.slots[i] = slot;
       slotGrid.appendChild(renderReviewSlotCard(row, slot));
@@ -748,6 +829,8 @@ function renderReviewGrid() {
           word: row.word,
           family: row.family || "",
           meaning: rowMeaningForRender(row),
+          ...rowPadMsForRender(row),
+          slotPads: rowSlotPadsForRender(row, picks),
           picks: picks.slice(0, TOP_K),
           reason,
         },
@@ -819,6 +902,8 @@ function renderReviewGrid() {
           word: row.word,
           family: row.family || "",
           meaning: rowMeaningForRender(row),
+          ...rowPadMsForRender(row),
+          slotPads: rowSlotPadsForRender(row, picks),
           picks: picks.slice(0, TOP_K),
           reason,
         },

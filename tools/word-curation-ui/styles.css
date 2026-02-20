@@ -487,6 +487,11 @@ video {
   flex: 1 1 260px;
 }
 
+.review-meaning-row .pad-input {
+  width: 88px;
+  flex: 0 0 88px;
+}
+
 .review-slot-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(190px, 1fr));
@@ -536,6 +541,17 @@ video {
   grid-template-columns: auto 1fr auto;
   gap: 6px;
   align-items: center;
+}
+
+.review-slot-pad-inputs {
+  display: grid;
+  grid-template-columns: auto 1fr 1fr;
+  gap: 6px;
+  align-items: center;
+}
+
+.review-slot-pad-inputs input[type="number"] {
+  min-width: 0;
 }
 
 .review-slot-inputs input[type="number"] {

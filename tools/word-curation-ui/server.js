@@ -113,6 +113,32 @@ function normalizeMeaning(meaning) {
   return String(meaning).split(/[;,.]/)[0].trim();
 }
 
+function normalizePadMs(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.trunc(n));
+}
+
+function normalizeOptionalPadMs(value) {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.trunc(n));
+}
+
+function normalizeSlotPads(slotPads) {
+  const out = [];
+  for (const item of Array.isArray(slotPads) ? slotPads : []) {
+    const candidateIndex = Number(item?.candidateIndex);
+    if (!Number.isInteger(candidateIndex) || candidateIndex <= 0) continue;
+    const pre = normalizeOptionalPadMs(item?.prePadMs);
+    const post = normalizeOptionalPadMs(item?.postPadMs);
+    if (pre == null && post == null) continue;
+    out.push({ candidateIndex, prePadMs: pre, postPadMs: post });
+  }
+  return out;
+}
+
 function loadFamilyMeaningMap(filePath = FAMILY_MEANINGS_FILE) {
   if (!filePath || !fs.existsSync(filePath)) return {};
   try {
@@ -896,15 +922,145 @@ function upsertManifestWord({ word, picks, reason, output, family }) {
   fs.writeFileSync(MANIFEST_FILE, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
-async function runPickRender(job, { word, picks, reason = "", family = "", meaning = "" }) {
+async function runPickRender(job, {
+  word,
+  picks,
+  reason = "",
+  family = "",
+  meaning = "",
+  prePadMs = null,
+  postPadMs = null,
+  slotPads = [],
+}) {
   const fam = String(family || "").trim();
   const m = String(meaning || "").trim();
+  const prePad = normalizePadMs(prePadMs, UI_PRE_PAD_MS);
+  const postPad = normalizePadMs(postPadMs, UI_POST_PAD_MS);
+  const normalizedSlotPads = normalizeSlotPads(slotPads);
+  const slotPadMap = new Map(normalizedSlotPads.map((x) => [x.candidateIndex, x]));
+  const hasSlotPadOverride = normalizedSlotPads.length > 0;
   const targetPicks = uniquePositiveInts(picks).slice(0, 5);
   if (targetPicks.length === 0) {
     throw new Error("picks required");
   }
 
   const pickCsv = targetPicks.join(",");
+
+  if (hasSlotPadOverride) {
+    const pickWorkDir = path.join(OUT_ROOT, "work", "pick-candidates");
+    fs.mkdirSync(pickWorkDir, { recursive: true });
+    const pickPoolFile = path.join(
+      pickWorkDir,
+      `${safeFilename(word)}__slotpad__${Date.now()}__${process.pid}.json`,
+    );
+    const selectedPool = targetPicks.map((candidateIndex) => {
+      const base = candidateFromSources(word, candidateIndex, fam);
+      if (!base) {
+        throw new Error(`Candidate ${candidateIndex} not found for "${word}"${fam ? ` family=${fam}` : ""}.`);
+      }
+      const p = slotPadMap.get(candidateIndex) || null;
+      const pre = p?.prePadMs == null ? prePad : p.prePadMs;
+      const post = p?.postPadMs == null ? postPad : p.postPadMs;
+      const rawStart = Number(base.clipStartMs);
+      const rawEnd = Number(base.clipEndMs);
+      const clipStartMs = Math.max(0, rawStart - pre);
+      const clipEndMs = Math.max(clipStartMs + 80, rawEnd + post);
+      return {
+        ...base,
+        clipStartMs,
+        clipEndMs,
+        clipStart: msToFfmpegTime(clipStartMs),
+        clipEnd: msToFfmpegTime(clipEndMs),
+      };
+    });
+    fs.writeFileSync(
+      pickPoolFile,
+      `${JSON.stringify(
+        {
+          query: word,
+          source: fam ? "family-slot-pad" : "db-slot-pad",
+          candidateCount: selectedPool.length,
+          pool: selectedPool,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    try {
+      const localPickCsv = selectedPool.map((_, i) => String(i + 1)).join(",");
+      const args = [
+        path.join("scripts", "make-vertical-shorts-clean.js"),
+        "--query",
+        word,
+        "--subsDir",
+        DEFAULT_JP_SUBS_DIR,
+        "--videosDir",
+        DEFAULT_VIDEOS_DIR,
+        "--wordList",
+        WORDS_FILE,
+        "--outDir",
+        path.join(OUT_ROOT, "work"),
+        "--outputDir",
+        OUT_ROOT,
+        "--mode",
+        "line",
+        "--prePadMs",
+        "0",
+        "--postPadMs",
+        "0",
+        "--maxClipMs",
+        String(UI_MAX_CLIP_MS),
+        "--longPolicy",
+        "skip",
+        "--limit",
+        String(Math.min(5, Math.max(1, selectedPool.length))),
+        "--candidatesIn",
+        pickPoolFile,
+        "--pick",
+        localPickCsv,
+        "--noAutoReplaceBad",
+        "--keepOutputs",
+      ];
+      if (DEFAULT_EN_SUBS_DIR) {
+        args.splice(5, 0, "--enSubsDir", DEFAULT_EN_SUBS_DIR);
+      }
+      if (m) {
+        args.push("--meaning", m);
+      }
+      appendJobLog(
+        job,
+        `Pick ${word}${fam ? ` family=${fam}` : ""}: ${pickCsv} (slot-pad overrides active)`,
+      );
+      await runNode(args, job);
+
+      const renderedOutCandidates = [
+        path.join(OUT_ROOT, `${safeFilename(word)}_clean_shorts.mp4`),
+        path.join(OUT_ROOT, `${safeFilename(word)}_${safeFilename(fam)}_clean_shorts.mp4`),
+      ];
+      const renderedOut = renderedOutCandidates.find((p) => fs.existsSync(p));
+      if (!renderedOut) {
+        throw new Error(`Rendered output not found for ${word}.`);
+      }
+      const canonical = path.join(OUT_ROOT, `${safeFilename(word)}.mp4`);
+      fs.copyFileSync(renderedOut, canonical);
+      appendJobLog(job, `Copied output -> ${canonical}`);
+      upsertManifestWord({
+        word,
+        picks: targetPicks,
+        reason,
+        output: canonical,
+        family: fam,
+      });
+      return;
+    } finally {
+      try {
+        fs.unlinkSync(pickPoolFile);
+      } catch {
+        // ignore temp cleanup failures
+      }
+    }
+  }
 
   // Non-family UI picks use DB/rerank candidateIndex semantics.
   // Render directly from DB candidate pool so selected indices map 1:1.
@@ -962,9 +1118,9 @@ async function runPickRender(job, { word, picks, reason = "", family = "", meani
         "--mode",
         "line",
         "--prePadMs",
-        String(UI_PRE_PAD_MS),
+        String(prePad),
         "--postPadMs",
-        String(UI_POST_PAD_MS),
+        String(postPad),
         "--maxClipMs",
         String(UI_MAX_CLIP_MS),
         "--longPolicy",
@@ -985,7 +1141,7 @@ async function runPickRender(job, { word, picks, reason = "", family = "", meani
         args.push("--meaning", m);
       }
 
-      appendJobLog(job, `Pick ${word}: ${pickCsv}`);
+      appendJobLog(job, `Pick ${word}: ${pickCsv} (pad=${prePad}/${postPad}ms)`);
       await runNode(args, job);
 
       const renderedOut = path.join(OUT_ROOT, `${safeFilename(word)}_clean_shorts.mp4`);
@@ -1029,9 +1185,9 @@ async function runPickRender(job, { word, picks, reason = "", family = "", meani
     "--mode",
     "line",
     "--prePadMs",
-    String(UI_PRE_PAD_MS),
+    String(prePad),
     "--postPadMs",
-    String(UI_POST_PAD_MS),
+    String(postPad),
     "--maxClipMs",
     String(UI_MAX_CLIP_MS),
     "--longPolicy",
@@ -1053,7 +1209,7 @@ async function runPickRender(job, { word, picks, reason = "", family = "", meani
     args.push("--meaning", m);
   }
 
-  appendJobLog(job, `Pick ${word}${fam ? ` family=${fam}` : ""}: ${pickCsv}`);
+  appendJobLog(job, `Pick ${word}${fam ? ` family=${fam}` : ""}: ${pickCsv} (pad=${prePad}/${postPad}ms)`);
   await runNode(args, job);
 
   const outputSlug = fam ? `${safeFilename(word)}_${safeFilename(fam)}` : safeFilename(word);
@@ -1073,11 +1229,41 @@ async function runPickRender(job, { word, picks, reason = "", family = "", meani
   });
 }
 
-function enqueuePick(word, picks, reason, family = "", meaning = "") {
+function enqueuePick(
+  word,
+  picks,
+  reason,
+  family = "",
+  meaning = "",
+  prePadMs = null,
+  postPadMs = null,
+  slotPads = [],
+) {
   const fam = String(family || "").trim();
   const m = String(meaning || "").trim();
-  return createJob("pick", { word, picks, reason, family: fam || null, meaning: m || null }, async (job) => {
-    await runPickRender(job, { word, picks, reason, family: fam, meaning: m });
+  const prePad = normalizePadMs(prePadMs, UI_PRE_PAD_MS);
+  const postPad = normalizePadMs(postPadMs, UI_POST_PAD_MS);
+  const normalizedSlotPads = normalizeSlotPads(slotPads);
+  return createJob("pick", {
+    word,
+    picks,
+    reason,
+    family: fam || null,
+    meaning: m || null,
+    prePadMs: prePad,
+    postPadMs: postPad,
+    slotPads: normalizedSlotPads,
+  }, async (job) => {
+    await runPickRender(job, {
+      word,
+      picks,
+      reason,
+      family: fam,
+      meaning: m,
+      prePadMs: prePad,
+      postPadMs: postPad,
+      slotPads: normalizedSlotPads,
+    });
   });
 }
 
@@ -1350,11 +1536,23 @@ const server = http.createServer(async (req, res) => {
       const word = String(body.word || "").trim();
       const family = String(body.family || "").trim();
       const meaning = String(body.meaning || "").trim();
+      const prePadMs = body.prePadMs;
+      const postPadMs = body.postPadMs;
+      const slotPads = body.slotPads;
       const picks = uniquePositiveInts(body.picks || []);
       const reason = String(body.reason || "").trim();
       if (!word) return json(res, 400, { error: "word is required" });
       if (picks.length === 0) return json(res, 400, { error: "picks required" });
-      const job = enqueuePick(word, picks.slice(0, 5), reason, family, meaning);
+      const job = enqueuePick(
+        word,
+        picks.slice(0, 5),
+        reason,
+        family,
+        meaning,
+        prePadMs,
+        postPadMs,
+        slotPads,
+      );
       return json(res, 200, { ok: true, jobId: job.id });
     }
 
