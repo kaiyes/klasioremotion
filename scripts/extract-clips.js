@@ -114,6 +114,7 @@ function parseArgs(argv) {
     avMaxSwapCandidates: 12,
     avMinAsrSim: 0.5,
     avMinVisionSim: 0.42,
+    avFailPolicy: "balanced", // balanced | strict
     avTimeoutMs: 45000,
     videoExts: DEFAULT_VIDEO_EXTS,
     verbose: false,
@@ -278,6 +279,10 @@ function parseArgs(argv) {
         break;
       case "avTimeoutMs":
         args.avTimeoutMs = Number(value);
+        takeNext();
+        break;
+      case "avFailPolicy":
+        args.avFailPolicy = String(value || "").trim().toLowerCase();
         takeNext();
         break;
       case "minClipMs":
@@ -490,6 +495,7 @@ Options:
   --avMaxSwapCandidates Max candidates to AV-check while replacing one bad slot (default: 12)
   --avMinAsrSim         Min JP similarity candidate vs Whisper (default: 0.5)
   --avMinVisionSim      Min JP similarity candidate vs vision OCR (default: 0.42)
+  --avFailPolicy        AV fail policy: balanced|strict (default: balanced)
   --avTimeoutMs         Timeout per vision request in ms (default: 45000)
   --dryRun              Print planned clips / ffmpeg commands, do not run
   --verbose             More logging
@@ -1065,6 +1071,10 @@ function scoreCandidate({
   enText,
   durationMs,
   matchCenterDistMs,
+  query,
+  matchText,
+  boundaryBefore = true,
+  familyMode = false,
 }) {
   let score = 0;
   const jpClean = normalizeTextForScoring(jpText);
@@ -1101,6 +1111,28 @@ function scoreCandidate({
 
   if (/^\s*[-–—]/.test(enClean)) score -= 2;
   if (/^\s*\[[^\]]+\]/.test(enClean)) score -= 2;
+
+  if (!familyMode) {
+    const q = normalizeJapaneseText(query || "");
+    const m = normalizeJapaneseText(matchText || "");
+    if (q && m) {
+      if (m === q) {
+        score += 6; // strong preference for direct/base match
+      } else if (m.includes(q)) {
+        const pos = m.indexOf(q);
+        const prefixLen = pos >= 0 ? pos : 0;
+        const suffixLen = Math.max(0, Array.from(m).length - prefixLen - Array.from(q).length);
+        if (prefixLen > 0) score -= 10; // e.g. 見つける / 引きつける for つける
+        if (suffixLen > 2) score -= 3;
+        if (hasKanji(m) && !hasKanji(q)) score -= 5;
+      } else {
+        score -= 5; // weaker relation to base query
+      }
+    }
+    if (!boundaryBefore) {
+      score -= 10; // query appears inside a larger token (e.g., 見つける for つける)
+    }
+  }
 
   return Math.round(score * 10) / 10;
 }
@@ -2172,7 +2204,9 @@ async function runVisionSubtitleEval({
 async function evaluateCandidateAv(item, args, avCtx) {
   const queryMatcher = avCtx?.matcher || { forms: [args.query], exclude: [] };
   const forms = normalizeMatchArray(queryMatcher?.forms || [args.query]);
-  const kanjiForms = forms.filter((f) => hasKanji(f));
+  const baseQueryText = String(args.matchContains || args.query || "").trim();
+  const enforceKanjiLock = hasKanji(baseQueryText);
+  const kanjiForms = enforceKanjiLock ? forms.filter((f) => hasKanji(f)) : [];
   const expectedMeaning = normalizeMeaning(String(avCtx?.wordEntry?.meaning || args.meaning || ""));
   const avCache = avCtx?.cache || avCtx?.av?.cache || null;
   const avRunId = String(avCtx?.runId || avCtx?.av?.runId || `run_${Date.now()}_${process.pid}`).trim();
@@ -2392,11 +2426,21 @@ async function applyAvEvalAndAutoReplace(selected, pool, args, gateCtx) {
   const out = selected.map((x) => ({ ...x }));
   const used = new Set(out.map((x) => Number(x.candidateIndex)).filter((n) => Number.isInteger(n)));
   const audit = [];
-  const hardFailReasons = new Set([
-    "av_query_not_in_audio",
+  const avFailPolicy = String(args.avFailPolicy || "balanced").toLowerCase();
+  const hardFailReasons =
+    avFailPolicy === "strict"
+      ? new Set([
+          "av_query_not_in_audio",
+          "av_asr_failed",
+          "av_query_not_in_line",
+          "av_kanji_line_missing",
+        ])
+      : new Set(["av_query_not_in_audio", "av_query_not_in_line", "av_kanji_line_missing"]);
+  const retryDeeperReasons = new Set([
     "av_asr_failed",
-    "av_query_not_in_line",
-    "av_kanji_line_missing",
+    "av_extract_audio_failed",
+    "av_vision_failed",
+    "av_extract_frames_failed",
   ]);
 
   for (let i = 0; i < out.length; i++) {
@@ -2455,8 +2499,10 @@ async function applyAvEvalAndAutoReplace(selected, pool, args, gateCtx) {
 
     let replacement = null;
     let avTried = 0;
+    const shouldSearchDeeper = currentAv.reasons.some((r) => retryDeeperReasons.has(String(r)));
     for (const cand of pool) {
       const shouldCapSearch =
+        !shouldSearchDeeper &&
         !isHardFail &&
         Number.isFinite(Number(args.avMaxSwapCandidates)) &&
         Number(args.avMaxSwapCandidates) > 0 &&
@@ -2897,6 +2943,22 @@ function buildQueryMatcher(query, wordEntry) {
   };
 }
 
+function isLikelyBoundaryBefore(text, idx) {
+  const chars = Array.from(String(text || ""));
+  if (!Number.isInteger(idx) || idx <= 0) return true;
+  if (idx > chars.length) return false;
+  const prev = chars[idx - 1] || "";
+  if (!prev) return true;
+  if (/\s/.test(prev)) return true;
+  if (/[、。，．,.!?！？:：;；「」『』（）()［］\[\]【】〈〉《》…]/.test(prev)) return true;
+  const particle1 = new Set(["を", "に", "が", "は", "も", "へ", "で", "と", "や", "か", "ね", "よ", "ぞ", "さ", "の", "て"]);
+  if (particle1.has(prev)) return true;
+  const prev2 = idx >= 2 ? `${chars[idx - 2] || ""}${chars[idx - 1] || ""}` : "";
+  const particle2 = new Set(["から", "まで", "より", "って", "ので", "のに", "には", "でも", "とも", "とか"]);
+  if (particle2.has(prev2)) return true;
+  return false;
+}
+
 function findMatchInText(text, matcher) {
   const source = String(text || "");
   if (!source) return null;
@@ -2910,16 +2972,52 @@ function findMatchInText(text, matcher) {
     if (!form) continue;
     const idx = source.indexOf(form);
     if (idx < 0) continue;
-    matched.push({ matchText: form, index: idx, length: Array.from(form).length });
+    matched.push({
+      matchText: form,
+      index: idx,
+      length: Array.from(form).length,
+      boundaryBefore: isLikelyBoundaryBefore(source, idx),
+    });
   }
   if (matched.length === 0) return null;
 
   const queryLen = Math.max(1, Array.from(matcher.query || "").length);
+  const queryNorm = normalizeJapaneseText(matcher.query || "");
   const compactLimit = Math.max(4, queryLen + 4);
   const compact = matched.filter((x) => x.length <= compactLimit);
   const pool = compact.length > 0 ? compact : matched;
-  pool.sort((a, b) => b.length - a.length || a.index - b.index);
-  return { matchText: pool[0].matchText, index: pool[0].index };
+  const queryHasKanji = hasKanji(queryNorm);
+
+  pool.sort((a, b) => {
+    const aText = normalizeJapaneseText(a.matchText || "");
+    const bText = normalizeJapaneseText(b.matchText || "");
+    const aExact = aText === queryNorm ? 1 : 0;
+    const bExact = bText === queryNorm ? 1 : 0;
+    if (aExact !== bExact) return bExact - aExact;
+
+    const aBoundary = a.boundaryBefore ? 1 : 0;
+    const bBoundary = b.boundaryBefore ? 1 : 0;
+    if (aBoundary !== bBoundary) return bBoundary - aBoundary;
+
+    const aContains = queryNorm && aText.includes(queryNorm) ? 1 : 0;
+    const bContains = queryNorm && bText.includes(queryNorm) ? 1 : 0;
+    if (aContains !== bContains) return bContains - aContains;
+
+    const aKanjiMismatch = hasKanji(aText) && !queryHasKanji ? 1 : 0;
+    const bKanjiMismatch = hasKanji(bText) && !queryHasKanji ? 1 : 0;
+    if (aKanjiMismatch !== bKanjiMismatch) return aKanjiMismatch - bKanjiMismatch;
+
+    const aExtra = aContains ? Array.from(aText).length - Array.from(queryNorm).length : 999;
+    const bExtra = bContains ? Array.from(bText).length - Array.from(queryNorm).length : 999;
+    if (aExtra !== bExtra) return aExtra - bExtra;
+
+    return a.index - b.index || a.length - b.length;
+  });
+  return {
+    matchText: pool[0].matchText,
+    index: pool[0].index,
+    boundaryBefore: Boolean(pool[0].boundaryBefore),
+  };
 }
 
 function msToAssTime(ms) {
@@ -4025,6 +4123,10 @@ async function main() {
           enText,
           durationMs: clipEndMs - clipStartMs,
           matchCenterDistMs,
+          query: args.matchContains || args.query,
+          matchText,
+          boundaryBefore: matchInfo.boundaryBefore !== false,
+          familyMode: Boolean(args.matchContains),
         });
         planned.push({
           subFile,
