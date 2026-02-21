@@ -53,10 +53,22 @@ function parseArgs(argv) {
     pick: null,
     replace: [],
     autoReplaceBad: true,
+    autoReplaceWithPick: false,
+    wordPlacement: "anywhere", // anywhere | middle
     meaning: null,
     familyMeaningsFile: DEFAULT_FAMILY_MEANINGS_FILE,
+    avEval: false,
+    avWhisperModel: String(process.env.AV_WHISPER_MODEL || "medium").trim(),
+    avWhisperLanguage: String(process.env.AV_WHISPER_LANGUAGE || "Japanese").trim(),
+    avVisionModel: String(process.env.AV_VISION_MODEL || "").trim(),
+    avOllamaHost: String(process.env.OLLAMA_HOST || "http://127.0.0.1:11434").trim(),
+    avQueryOnly: true,
+    avMaxSwapCandidates: 12,
+    avMinAsrSim: 0.5,
+    avMinVisionSim: 0.42,
+    avTimeoutMs: 45000,
     mode: "line",
-    tailRepeat: 3,
+    tailRepeat: 1,
     brandQrUrl: "http://bundai.app/",
     cleanOutputs: true,
     verbose: false,
@@ -175,8 +187,68 @@ function parseArgs(argv) {
       case "noAutoReplaceBad":
         args.autoReplaceBad = false;
         break;
+      case "autoReplaceWithPick":
+        args.autoReplaceWithPick = true;
+        break;
+      case "noAutoReplaceWithPick":
+        args.autoReplaceWithPick = false;
+        break;
+      case "wordPlacement":
+        args.wordPlacement = String(v || "").trim().toLowerCase();
+        takeNext();
+        break;
+      case "wordMiddle":
+        args.wordPlacement = "middle";
+        break;
+      case "wordAnywhere":
+        args.wordPlacement = "anywhere";
+        break;
       case "meaning":
         args.meaning = v;
+        takeNext();
+        break;
+      case "avEval":
+        args.avEval = true;
+        break;
+      case "noAvEval":
+        args.avEval = false;
+        break;
+      case "avWhisperModel":
+        args.avWhisperModel = String(v || "").trim();
+        takeNext();
+        break;
+      case "avWhisperLanguage":
+        args.avWhisperLanguage = String(v || "").trim();
+        takeNext();
+        break;
+      case "avVisionModel":
+        args.avVisionModel = String(v || "").trim();
+        takeNext();
+        break;
+      case "avOllamaHost":
+        args.avOllamaHost = String(v || "").trim();
+        takeNext();
+        break;
+      case "avQueryOnly":
+        args.avQueryOnly = true;
+        break;
+      case "noAvQueryOnly":
+        args.avQueryOnly = false;
+        break;
+      case "avMaxSwapCandidates":
+        args.avMaxSwapCandidates = Number(v);
+        takeNext();
+        break;
+      case "avMinAsrSim":
+        args.avMinAsrSim = Number(v);
+        takeNext();
+        break;
+      case "avMinVisionSim":
+        args.avMinVisionSim = Number(v);
+        takeNext();
+        break;
+      case "avTimeoutMs":
+        args.avTimeoutMs = Number(v);
         takeNext();
         break;
       case "familyMeaningsFile":
@@ -237,13 +309,28 @@ Options:
   --pick <list>              Pick ranked indices, e.g. "1,2,7,9,11"
   --replace <a=b>            Replace picked slot with ranked index, e.g. "3=12"
   --noAutoReplaceBad         Keep selected picks exactly (disable gate auto-swap)
+  --autoReplaceWithPick      Allow gate auto-swap even when --pick is used
+  --wordPlacement <mode>     Word position gate: anywhere|middle (default: anywhere)
+  --wordMiddle               Alias for --wordPlacement middle
+  --wordAnywhere             Alias for --wordPlacement anywhere
+  --avEval                   Enable AV eval gate (Whisper + optional vision)
+  --avWhisperModel <m>       Whisper model for AV eval (default: medium)
+  --avWhisperLanguage <l>    Whisper language (default: Japanese)
+  --avVisionModel <m>        Ollama vision model, e.g. qwen3-vl:8b
+  --avOllamaHost <url>       Ollama host (default: http://127.0.0.1:11434)
+  --avQueryOnly              AV mode: require target-word presence in Whisper audio (default)
+  --noAvQueryOnly            Also enforce JP similarity vs Whisper
+  --avMaxSwapCandidates <n>  Max AV candidate checks while replacing one bad slot (default: 12)
+  --avMinAsrSim <n>          Min JP similarity vs Whisper (default: 0.5)
+  --avMinVisionSim <n>       Min JP similarity vs vision OCR (default: 0.42)
+  --avTimeoutMs <n>          Vision timeout per clip in ms (default: 45000)
   --meaning <text>           Override meaning shown on top card
   --familyMeaningsFile <f>   Saved family->meaning map (default: source_content/family-meanings.json)
   --prePadMs <n>             Passed to extractor (default: 1500)
   --postPadMs <n>            Passed to extractor (default: 1500)
   --maxClipMs <n>            Passed to extractor (default: 2500)
   --longPolicy <skip|shrink> Passed to extractor (default: shrink)
-  --tailRepeat <n>           End card repeat count (default: 3)
+  --tailRepeat <n>           End card repeat count (default: 1)
   --brandQrUrl <url>         Branding QR URL (default: http://bundai.app/)
   --keepOutputs              Keep old out dirs (default: clean on each run)
   --cleanOutputs             Force clean outputs before run
@@ -282,6 +369,12 @@ function safeFilename(s) {
     .replace(/[\/\\?%*:|"<>]/g, "_")
     .replace(/\s+/g, "_")
     .slice(0, 80);
+}
+
+function timestampTag() {
+  const d = new Date();
+  const z = (n, w = 2) => String(n).padStart(w, "0");
+  return `${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}`;
 }
 
 function spawnOrThrow(cmd, cmdArgs, verbose) {
@@ -862,6 +955,9 @@ async function main() {
       `Required: --query --subsDir [--videosDir]. Default videos dir: ${DEFAULT_VIDEOS_DIR}`,
     );
   }
+  if (!["anywhere", "middle"].includes(args.wordPlacement)) {
+    throw new Error('--wordPlacement must be "anywhere" or "middle".');
+  }
   if (args.cleanOutputs) {
     cleanOutputDirs({ outDir: args.outDir, outputDir: args.outputDir, verbose: args.verbose });
   }
@@ -913,7 +1009,21 @@ async function main() {
   if (args.candidatesIn) extractArgs.push("--candidatesIn", args.candidatesIn);
   if (args.pick) extractArgs.push("--pick", args.pick);
   for (const r of args.replace) extractArgs.push("--replace", r);
+  if (args.autoReplaceWithPick) extractArgs.push("--autoReplaceWithPick");
   if (!args.autoReplaceBad) extractArgs.push("--noAutoReplaceBad");
+  extractArgs.push("--wordPlacement", args.wordPlacement);
+  if (args.avEval) extractArgs.push("--avEval");
+  if (args.avWhisperModel) extractArgs.push("--avWhisperModel", args.avWhisperModel);
+  if (args.avWhisperLanguage) extractArgs.push("--avWhisperLanguage", args.avWhisperLanguage);
+  if (args.avVisionModel) extractArgs.push("--avVisionModel", args.avVisionModel);
+  if (args.avOllamaHost) extractArgs.push("--avOllamaHost", args.avOllamaHost);
+  if (args.avQueryOnly) extractArgs.push("--avQueryOnly");
+  if (Number.isFinite(args.avMaxSwapCandidates)) {
+    extractArgs.push("--avMaxSwapCandidates", String(args.avMaxSwapCandidates));
+  }
+  if (Number.isFinite(args.avMinAsrSim)) extractArgs.push("--avMinAsrSim", String(args.avMinAsrSim));
+  if (Number.isFinite(args.avMinVisionSim)) extractArgs.push("--avMinVisionSim", String(args.avMinVisionSim));
+  if (Number.isFinite(args.avTimeoutMs)) extractArgs.push("--avTimeoutMs", String(args.avTimeoutMs));
   if (args.verbose) extractArgs.push("--verbose");
 
   console.log("Step 1/2: Extracting clean stitched clip...");
@@ -1050,7 +1160,7 @@ async function main() {
     overlays.push({ path: png, start, end });
   }
 
-  const outPath = path.join(args.outputDir, `${outputSlug}_clean_shorts.mp4`);
+  const outPath = path.join(args.outputDir, `${outputSlug}.mp4`);
   console.log("Step 2/2: Rendering vertical clean short...");
   runFfmpegVerticalTimed({
     input: stitched,
@@ -1086,6 +1196,13 @@ async function main() {
       );
     }
   }
+
+  const versionedOutPath = path.join(
+    args.outputDir,
+    `${outputSlug}.${timestampTag()}.mp4`,
+  );
+  fs.copyFileSync(outPath, versionedOutPath);
+  console.log(`Saved versioned output copy: ${versionedOutPath}`);
 
   for (const o of overlays) {
     try {

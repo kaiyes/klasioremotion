@@ -96,6 +96,8 @@ function parseArgs(argv) {
     maxSentenceItems: 8,
     clipFit: true,
     autoReplaceBad: true,
+    autoReplaceWithPick: false,
+    wordPlacement: "anywhere", // anywhere | middle
     maxJpChars: 34,
     maxEnChars: 84,
     maxJpLines: 2,
@@ -103,6 +105,16 @@ function parseArgs(argv) {
     maxJpCps: 16,
     maxEnCps: 20,
     enPolishModel: String(process.env.EN_POLISH_MODEL || "").trim(),
+    avEval: false,
+    avWhisperModel: String(process.env.AV_WHISPER_MODEL || "medium").trim(),
+    avWhisperLanguage: String(process.env.AV_WHISPER_LANGUAGE || "Japanese").trim(),
+    avVisionModel: String(process.env.AV_VISION_MODEL || "").trim(),
+    avOllamaHost: String(process.env.OLLAMA_HOST || "http://127.0.0.1:11434").trim(),
+    avQueryOnly: true,
+    avMaxSwapCandidates: 12,
+    avMinAsrSim: 0.5,
+    avMinVisionSim: 0.42,
+    avTimeoutMs: 45000,
     videoExts: DEFAULT_VIDEO_EXTS,
     verbose: false,
   };
@@ -180,6 +192,22 @@ function parseArgs(argv) {
       case "noAutoReplaceBad":
         args.autoReplaceBad = false;
         break;
+      case "autoReplaceWithPick":
+        args.autoReplaceWithPick = true;
+        break;
+      case "noAutoReplaceWithPick":
+        args.autoReplaceWithPick = false;
+        break;
+      case "wordPlacement":
+        args.wordPlacement = String(value || "").trim().toLowerCase();
+        takeNext();
+        break;
+      case "wordMiddle":
+        args.wordPlacement = "middle";
+        break;
+      case "wordAnywhere":
+        args.wordPlacement = "anywhere";
+        break;
       case "maxJpChars":
         args.maxJpChars = Number(value);
         takeNext();
@@ -206,6 +234,50 @@ function parseArgs(argv) {
         break;
       case "enPolishModel":
         args.enPolishModel = String(value || "").trim();
+        takeNext();
+        break;
+      case "avEval":
+        args.avEval = true;
+        break;
+      case "noAvEval":
+        args.avEval = false;
+        break;
+      case "avWhisperModel":
+        args.avWhisperModel = String(value || "").trim();
+        takeNext();
+        break;
+      case "avWhisperLanguage":
+        args.avWhisperLanguage = String(value || "").trim();
+        takeNext();
+        break;
+      case "avVisionModel":
+        args.avVisionModel = String(value || "").trim();
+        takeNext();
+        break;
+      case "avOllamaHost":
+        args.avOllamaHost = String(value || "").trim();
+        takeNext();
+        break;
+      case "avQueryOnly":
+        args.avQueryOnly = true;
+        break;
+      case "noAvQueryOnly":
+        args.avQueryOnly = false;
+        break;
+      case "avMaxSwapCandidates":
+        args.avMaxSwapCandidates = Number(value);
+        takeNext();
+        break;
+      case "avMinAsrSim":
+        args.avMinAsrSim = Number(value);
+        takeNext();
+        break;
+      case "avMinVisionSim":
+        args.avMinVisionSim = Number(value);
+        takeNext();
+        break;
+      case "avTimeoutMs":
+        args.avTimeoutMs = Number(value);
         takeNext();
         break;
       case "minClipMs":
@@ -397,6 +469,10 @@ Options:
   --noClipFit           Disable clip-fit trimming stage
   --autoReplaceBad      Auto-replace bad picks using next good ranked candidates (default: on)
   --noAutoReplaceBad    Disable auto replacement
+  --autoReplaceWithPick Allow auto replacement even when --pick is provided (default: off)
+  --wordPlacement       Word position gate: anywhere|middle (default: anywhere)
+  --wordMiddle          Alias for --wordPlacement middle
+  --wordAnywhere        Alias for --wordPlacement anywhere
   --maxJpChars          Readability gate: max JP chars after fit (default: 34)
   --maxEnChars          Readability gate: max EN chars after fit (default: 84)
   --maxJpLines          Readability gate: max JP lines after wrap (default: 2)
@@ -404,6 +480,17 @@ Options:
   --maxJpCps            Readability gate: max JP chars/sec (default: 16)
   --maxEnCps            Readability gate: max EN chars/sec (default: 20)
   --enPolishModel       Optional Ollama model to shorten EN as fallback
+  --avEval              Enable AV evaluator (Whisper + optional vision)
+  --avWhisperModel      Whisper model for AV evaluator (default: medium)
+  --avWhisperLanguage   Whisper language for AV evaluator (default: Japanese)
+  --avVisionModel       Optional Ollama vision model (e.g. qwen3-vl:8b)
+  --avOllamaHost        Ollama host for vision eval (default: http://127.0.0.1:11434)
+  --avQueryOnly         AV gate mode: only require target-word presence in Whisper audio (default)
+  --noAvQueryOnly       Disable query-only mode (also require JP similarity vs Whisper)
+  --avMaxSwapCandidates Max candidates to AV-check while replacing one bad slot (default: 12)
+  --avMinAsrSim         Min JP similarity candidate vs Whisper (default: 0.5)
+  --avMinVisionSim      Min JP similarity candidate vs vision OCR (default: 0.42)
+  --avTimeoutMs         Timeout per vision request in ms (default: 45000)
   --dryRun              Print planned clips / ffmpeg commands, do not run
   --verbose             More logging
 `;
@@ -844,6 +931,8 @@ function toCandidateRecord(item) {
     score: item.score,
     gateReasons: Array.isArray(item.gateReasons) ? [...item.gateReasons] : [],
     gateMeta: item.gateMeta || null,
+    avReasons: Array.isArray(item.avReasons) ? [...item.avReasons] : [],
+    avMeta: item.avMeta || null,
     replacedFrom: Number.isInteger(Number(item.replacedFrom))
       ? Number(item.replacedFrom)
       : null,
@@ -1382,6 +1471,44 @@ function clipFitCandidateText(item, args, fitCtx) {
     const enAnchor = Math.round(ratio * Math.max(0, rawEn.length - 1));
     enText = pickClauseNearAnchor(enClauses, enAnchor, 10) || rawEn;
     enText = trimClauseEdges(enText, "en");
+
+    const countEnChars = (s) => Array.from(String(s || "").replace(/\s+/g, "")).length;
+    const fitChars = countEnChars(enText);
+    const rawChars = countEnChars(rawEn);
+    const maybeOverTrimmed =
+      enClauses.length > 1 && fitChars > 0 && fitChars < 16 && rawChars - fitChars >= 8;
+
+    if (maybeOverTrimmed) {
+      let clauseIdx = enClauses.findIndex((c) => enAnchor >= c.start && enAnchor < c.end);
+      if (clauseIdx < 0) {
+        clauseIdx = 0;
+        let bestDist = Infinity;
+        for (let i = 0; i < enClauses.length; i++) {
+          const mid = (enClauses[i].start + enClauses[i].end) / 2;
+          const d = Math.abs(mid - enAnchor);
+          if (d < bestDist) {
+            bestDist = d;
+            clauseIdx = i;
+          }
+        }
+      }
+      const right = clauseIdx < enClauses.length - 1 ? enClauses[clauseIdx + 1].text : "";
+      const left = clauseIdx > 0 ? enClauses[clauseIdx - 1].text : "";
+      const preferRight = !/[.!?]$/.test(enText) || /[,;:]$/.test(enText);
+      const merged = trimClauseEdges(
+        preferRight
+          ? [enText, right].filter(Boolean).join(" ")
+          : [left, enText].filter(Boolean).join(" "),
+        "en",
+      );
+      const mergedChars = countEnChars(merged);
+      if (mergedChars >= fitChars + 6 && mergedChars <= Math.max(32, Math.min(64, args.maxEnChars))) {
+        enText = merged;
+      } else if (rawChars <= Math.max(28, Math.min(48, args.maxEnChars)) && enClauses.length <= 2) {
+        // If the cue is short overall, use the full cue instead of a clipped noun fragment.
+        enText = rawEn;
+      }
+    }
   }
 
   return {
@@ -1398,7 +1525,14 @@ function clipFitCandidateText(item, args, fitCtx) {
 
 function evaluateCandidateQuality(item, args, gateCtx) {
   const reasons = [];
+  const placementMode = String(args.wordPlacement || "anywhere").trim().toLowerCase();
   const durationMs = Math.max(1, Number(item.clipEndMs) - Number(item.clipStartMs));
+  const matchStartMs = Number.isFinite(Number(item.matchStartMs))
+    ? Number(item.matchStartMs)
+    : Number(item.clipStartMs);
+  const matchEndMs = Number.isFinite(Number(item.matchEndMs))
+    ? Number(item.matchEndMs)
+    : Number(item.clipEndMs);
   const jpText = normalizeJapaneseText(item.sentenceText || "");
   const enText = normalizeEnglishText(item.enText || "");
   const jpChars = Array.from(jpText).length;
@@ -1417,6 +1551,18 @@ function evaluateCandidateQuality(item, args, gateCtx) {
   if (enChars > 0 && enChars < 8) reasons.push("fragment");
   if (detectFragment(jpText, "jp") || detectFragment(enText, "en")) reasons.push("fragment");
   if (detectTrailing(jpText, "jp") || detectTrailing(enText, "en")) reasons.push("trailing");
+
+  const leadMs = Math.max(0, matchStartMs - Number(item.clipStartMs || 0));
+  const tailMs = Math.max(0, Number(item.clipEndMs || 0) - matchEndMs);
+  const matchMidMs = (matchStartMs + matchEndMs) / 2;
+  const matchPosRatio = durationMs > 0 ? (matchMidMs - Number(item.clipStartMs || 0)) / durationMs : 0.5;
+  if (durationMs >= 1600) {
+    if (leadMs < 120) reasons.push("head_cut");
+    if (tailMs < 220) reasons.push("tail_cut");
+    if (placementMode === "middle" && (matchPosRatio < 0.18 || matchPosRatio > 0.82)) {
+      reasons.push("edge_match");
+    }
+  }
 
   const overflow =
     jpChars > args.maxJpChars ||
@@ -1438,6 +1584,10 @@ function evaluateCandidateQuality(item, args, gateCtx) {
       enCps: Number(enCps.toFixed(2)),
       jpLines: jpLines.length,
       enLines: enLines.length,
+      leadMs: Math.round(leadMs),
+      tailMs: Math.round(tailMs),
+      matchPosRatio: Number(matchPosRatio.toFixed(3)),
+      placementMode,
     },
   };
 }
@@ -1470,6 +1620,904 @@ function polishEnglishWithOllama({ model, enText, jpText, query }) {
     .filter(Boolean)[0];
   if (!out) return "";
   return normalizeEnglishText(out).replace(/^["'`]|["'`]$/g, "");
+}
+
+function diceSimilarity(a, b) {
+  const x = normalizeJapaneseText(a || "");
+  const y = normalizeJapaneseText(b || "");
+  if (!x || !y) return 0;
+  if (x === y) return 1;
+  const grams = (s) => {
+    const chars = Array.from(s);
+    if (chars.length <= 1) return new Set(chars);
+    const set = new Set();
+    for (let i = 0; i < chars.length - 1; i++) {
+      set.add(chars[i] + chars[i + 1]);
+    }
+    return set;
+  };
+  const ax = grams(x);
+  const by = grams(y);
+  let overlap = 0;
+  for (const g of ax) if (by.has(g)) overlap++;
+  return (2 * overlap) / Math.max(1, ax.size + by.size);
+}
+
+function extractFirstJsonObject(text) {
+  const src = String(text || "");
+  const start = src.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < src.length; i++) {
+    const ch = src[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") depth++;
+    if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        const candidate = src.slice(start, i + 1);
+        try {
+          return JSON.parse(candidate);
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function parseVisionSubtitleResponse(raw) {
+  const obj = extractFirstJsonObject(raw);
+  const parseBool = (v, fallback = false) => {
+    if (typeof v === "boolean") return v;
+    const s = String(v || "").trim().toLowerCase();
+    if (!s) return fallback;
+    if (["true", "yes", "1", "y"].includes(s)) return true;
+    if (["false", "no", "0", "n"].includes(s)) return false;
+    return fallback;
+  };
+  if (obj && typeof obj === "object") {
+    const hasLineOk = Object.prototype.hasOwnProperty.call(obj, "line_ok") || Object.prototype.hasOwnProperty.call(obj, "lineOk");
+    const hasKanjiOk = Object.prototype.hasOwnProperty.call(obj, "kanji_ok") || Object.prototype.hasOwnProperty.call(obj, "kanjiOk");
+    const hasSenseOk = Object.prototype.hasOwnProperty.call(obj, "sense_ok") || Object.prototype.hasOwnProperty.call(obj, "senseOk");
+    return {
+      jp: String(obj.jp || obj.japanese || "").trim(),
+      en: String(obj.en || obj.english || "").trim(),
+      hasExtra:
+        parseBool(
+          obj.has_extra != null ? obj.has_extra : obj.hasExtra != null ? obj.hasExtra : false,
+          false,
+        ),
+      kanjiOk: parseBool(
+        obj.kanji_ok != null ? obj.kanji_ok : obj.kanjiOk != null ? obj.kanjiOk : true,
+        true,
+      ),
+      senseOk: parseBool(
+        obj.sense_ok != null ? obj.sense_ok : obj.senseOk != null ? obj.senseOk : true,
+        true,
+      ),
+      lineOk: parseBool(
+        obj.line_ok != null ? obj.line_ok : obj.lineOk != null ? obj.lineOk : true,
+        true,
+      ),
+      lineProvided: hasLineOk,
+      kanjiProvided: hasKanjiOk,
+      senseProvided: hasSenseOk,
+      notes: String(obj.notes || obj.reason || "").trim(),
+      raw: String(raw || "").trim(),
+      parsed: true,
+    };
+  }
+  return {
+    jp: "",
+    en: "",
+    hasExtra: false,
+    kanjiOk: true,
+    senseOk: true,
+    lineOk: true,
+    lineProvided: false,
+    kanjiProvided: false,
+    senseProvided: false,
+    notes: "",
+    raw: String(raw || "").trim(),
+    parsed: false,
+  };
+}
+
+function buildEvalFrameTimes(startMs, endMs) {
+  const s = Math.max(0, Math.round(Number(startMs) || 0));
+  const e = Math.max(s + 1, Math.round(Number(endMs) || 0));
+  const dur = e - s;
+  const frames = Math.max(3, Math.min(4, Math.ceil(dur / 700) + 1));
+  const out = [];
+  for (let i = 0; i < frames; i++) {
+    const ratio = frames === 1 ? 0.5 : i / (frames - 1);
+    const t = s + Math.round((dur - 1) * ratio);
+    if (out.length === 0 || out[out.length - 1] !== t) out.push(t);
+  }
+  return out;
+}
+
+function hasKanji(text) {
+  return /[一-龯]/.test(String(text || ""));
+}
+
+function includesAnyNormalized(source, terms) {
+  const src = normalizeJapaneseText(source || "");
+  if (!src) return false;
+  for (const raw of terms || []) {
+    const t = normalizeJapaneseText(raw || "");
+    if (!t) continue;
+    if (src.includes(t)) return true;
+  }
+  return false;
+}
+
+function extractMeaningKeywords(meaning) {
+  const src = String(meaning || "")
+    .toLowerCase()
+    .replace(/[()]/g, " ")
+    .replace(/[;|/,+]/g, " ");
+  const stop = new Set([
+    "to",
+    "a",
+    "an",
+    "the",
+    "be",
+    "is",
+    "are",
+    "am",
+    "of",
+    "in",
+    "on",
+    "at",
+    "for",
+    "with",
+    "and",
+    "or",
+  ]);
+  const words = src
+    .split(/\s+/g)
+    .map((x) => x.trim())
+    .filter((x) => x.length >= 3 && !stop.has(x));
+  return Array.from(new Set(words)).slice(0, 12);
+}
+
+function countKeywordHits(text, keywords) {
+  const src = String(text || "").toLowerCase();
+  if (!src) return 0;
+  let hits = 0;
+  for (const k of keywords || []) {
+    if (!k) continue;
+    if (src.includes(k)) hits++;
+  }
+  return hits;
+}
+
+function ffmpegExtractAudioForEval({ input, startMs, endMs, output, verbose }) {
+  const durationSec = Math.max(0.08, (Number(endMs) - Number(startMs)) / 1000);
+  const args = [
+    "-y",
+    "-v",
+    "error",
+    "-ss",
+    msToFfmpegTime(startMs),
+    "-t",
+    durationSec.toFixed(3),
+    "-i",
+    input,
+    "-vn",
+    "-ac",
+    "1",
+    "-ar",
+    "16000",
+    "-c:a",
+    "pcm_s16le",
+    output,
+  ];
+  const res = spawnSync("ffmpeg", args, { encoding: "utf8" });
+  if (verbose && res.stderr) process.stderr.write(res.stderr);
+  if (res.status !== 0) {
+    throw new Error(`ffmpeg audio extract failed (${res.status})`);
+  }
+}
+
+function ffmpegCaptureFrameForEval({ input, timeMs, output, verbose }) {
+  const args = [
+    "-y",
+    "-v",
+    "error",
+    "-ss",
+    msToFfmpegTime(timeMs),
+    "-i",
+    input,
+    "-frames:v",
+    "1",
+    "-q:v",
+    "2",
+    output,
+  ];
+  const res = spawnSync("ffmpeg", args, { encoding: "utf8" });
+  if (verbose && res.stderr) process.stderr.write(res.stderr);
+  if (res.status !== 0) {
+    throw new Error(`ffmpeg frame capture failed (${res.status})`);
+  }
+}
+
+function runWhisperForEval({ audioFile, model, language, workDir, verbose }) {
+  const base = path.basename(audioFile, path.extname(audioFile));
+  const outJson = path.join(workDir, `${base}.json`);
+  try {
+    fs.unlinkSync(outJson);
+  } catch {}
+  const args = [
+    audioFile,
+    "--model",
+    model,
+    "--language",
+    language,
+    "--task",
+    "transcribe",
+    "--word_timestamps",
+    "False",
+    "--output_format",
+    "json",
+    "--output_dir",
+    workDir,
+  ];
+  const res = spawnSync("whisper", args, { encoding: "utf8" });
+  if (verbose && res.stderr) process.stderr.write(res.stderr);
+  if (res.status !== 0 || !fs.existsSync(outJson)) {
+    return { ok: false, text: "", error: "whisper_failed", startMs: null, endMs: null };
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(outJson, "utf8"));
+    const text = String(parsed?.text || "").trim();
+    const segments = Array.isArray(parsed?.segments) ? parsed.segments : [];
+    const starts = segments
+      .map((s) => Number(s?.start))
+      .filter((x) => Number.isFinite(x) && x >= 0)
+      .map((x) => Math.round(x * 1000));
+    const ends = segments
+      .map((s) => Number(s?.end))
+      .filter((x) => Number.isFinite(x) && x >= 0)
+      .map((x) => Math.round(x * 1000));
+    const startMs = starts.length > 0 ? Math.min(...starts) : null;
+    const endMs = ends.length > 0 ? Math.max(...ends) : null;
+    return {
+      ok: Boolean(text),
+      text,
+      error: text ? "" : "whisper_empty",
+      startMs,
+      endMs,
+    };
+  } catch {
+    return { ok: false, text: "", error: "whisper_bad_json", startMs: null, endMs: null };
+  }
+}
+
+async function runVisionSubtitleEvalSingle({
+  imageFile,
+  model,
+  host,
+  timeoutMs,
+  query,
+  matchText,
+  candidateJp,
+  candidateEn,
+  asrJp,
+}) {
+  const m = String(model || "").trim();
+  if (!m) {
+    return {
+      ok: false,
+      error: "vision_disabled",
+      jp: "",
+      en: "",
+      hasExtra: false,
+      kanjiOk: true,
+      senseOk: true,
+      lineOk: true,
+      lineProvided: false,
+      kanjiProvided: false,
+      senseProvided: false,
+      notes: "",
+    };
+  }
+  const file = String(imageFile || "");
+  if (!file || !fs.existsSync(file)) {
+    return {
+      ok: false,
+      error: "vision_no_image",
+      jp: "",
+      en: "",
+      hasExtra: false,
+      kanjiOk: true,
+      senseOk: true,
+      lineOk: true,
+      lineProvided: false,
+      kanjiProvided: false,
+      senseProvided: false,
+      notes: "",
+    };
+  }
+  const prompt = [
+    "You are validating subtitle alignment for one anime clip using one frame.",
+    "Read subtitle text visible in this frame only.",
+    "Target word: " + String(query || ""),
+    "Matched line form: " + String(matchText || ""),
+    "Candidate JP subtitle: " + String(candidateJp || ""),
+    "Candidate EN subtitle: " + String(candidateEn || ""),
+    "Whisper JP transcript: " + String(asrJp || ""),
+    "Return STRICT JSON only:",
+    '{"jp":"<japanese subtitle seen in frame>","en":"<english subtitle seen in frame>","has_extra":true|false,"line_ok":true|false,"notes":"<short reason>"}',
+    "Set has_extra=true when frame includes leading/trailing subtitle that does not belong to spoken line.",
+    "Set line_ok=true only when subtitle in frame aligns with candidate line and Whisper transcript.",
+  ].join("\n");
+  const body = {
+    model: m,
+    prompt,
+    images: [fs.readFileSync(file).toString("base64")],
+    stream: false,
+    format: "json",
+    options: { temperature: 0 },
+  };
+
+  if (typeof fetch !== "function") {
+    return {
+      ok: false,
+      error: "vision_fetch_unavailable",
+      jp: "",
+      en: "",
+      hasExtra: false,
+      kanjiOk: true,
+      senseOk: true,
+      lineOk: true,
+      lineProvided: false,
+      kanjiProvided: false,
+      senseProvided: false,
+      notes: "",
+    };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 45000));
+  try {
+    const res = await fetch(`${String(host || "http://127.0.0.1:11434").replace(/\/+$/, "")}/api/generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: `vision_http_${res.status}`,
+        jp: "",
+        en: "",
+        hasExtra: false,
+        kanjiOk: true,
+        senseOk: true,
+        lineOk: true,
+        lineProvided: false,
+        kanjiProvided: false,
+        senseProvided: false,
+        notes: "",
+      };
+    }
+    const raw = String(
+      data?.response ||
+      data?.thinking ||
+      data?.output ||
+      data?.content ||
+      "",
+    ).trim();
+    const parsed = parseVisionSubtitleResponse(raw);
+    return {
+      ok: parsed.parsed,
+      error: parsed.parsed ? "" : "vision_parse_failed",
+      jp: parsed.jp,
+      en: parsed.en,
+      hasExtra: Boolean(parsed.hasExtra),
+      kanjiOk: Boolean(parsed.kanjiOk),
+      senseOk: Boolean(parsed.senseOk),
+      lineOk: Boolean(parsed.lineOk),
+      lineProvided: Boolean(parsed.lineProvided),
+      kanjiProvided: Boolean(parsed.kanjiProvided),
+      senseProvided: Boolean(parsed.senseProvided),
+      notes: String(parsed.notes || ""),
+      raw,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: String(err?.name || err?.message || "vision_failed"),
+      jp: "",
+      en: "",
+      hasExtra: false,
+      kanjiOk: true,
+      senseOk: true,
+      lineOk: true,
+      lineProvided: false,
+      kanjiProvided: false,
+      senseProvided: false,
+      notes: "",
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function runVisionSubtitleEval({
+  imageFiles,
+  model,
+  host,
+  timeoutMs,
+  query,
+  expectedMeaning,
+  matchText,
+  candidateJp,
+  candidateEn,
+  asrJp,
+}) {
+  const files = Array.isArray(imageFiles) ? imageFiles.filter((p) => p && fs.existsSync(p)) : [];
+  if (files.length === 0) {
+    return {
+      ok: false,
+      error: "vision_no_images",
+      jp: "",
+      en: "",
+      hasExtra: false,
+      kanjiOk: true,
+      senseOk: true,
+      lineOk: true,
+      lineProvided: false,
+      kanjiProvided: false,
+      senseProvided: false,
+      notes: "",
+      raw: "",
+      perFrame: [],
+    };
+  }
+
+  const perFrame = [];
+  for (const file of files) {
+    const one = await runVisionSubtitleEvalSingle({
+      imageFile: file,
+      model,
+      host,
+      timeoutMs,
+      query,
+      expectedMeaning,
+      matchText,
+      candidateJp,
+      candidateEn,
+      asrJp,
+    });
+    perFrame.push({ file, ...one });
+  }
+
+  const okFrames = perFrame.filter((x) => x.ok);
+  if (okFrames.length === 0) {
+    const firstErr = perFrame.find((x) => x.error)?.error || "vision_all_failed";
+    return {
+      ok: false,
+      error: firstErr,
+      jp: "",
+      en: "",
+      hasExtra: false,
+      kanjiOk: true,
+      senseOk: true,
+      lineOk: true,
+      lineProvided: false,
+      kanjiProvided: false,
+      senseProvided: false,
+      notes: "",
+      raw: "",
+      perFrame,
+    };
+  }
+
+  const uniqJoin = (arr) =>
+    Array.from(new Set(arr.map((x) => String(x || "").trim()).filter(Boolean))).join(" ");
+  const jpJoined = uniqJoin(okFrames.map((x) => x.jp));
+  const enJoined = uniqJoin(okFrames.map((x) => x.en));
+  const notesJoined = uniqJoin(okFrames.map((x) => x.notes));
+  const rawJoined = uniqJoin(okFrames.map((x) => x.raw));
+  const hasExtra = okFrames.some((x) => x.hasExtra);
+
+  const lineProvided = okFrames.some((x) => x.lineProvided);
+  const kanjiProvided = okFrames.some((x) => x.kanjiProvided);
+  const senseProvided = okFrames.some((x) => x.senseProvided);
+
+  const lineOk = lineProvided ? !okFrames.some((x) => x.lineProvided && !x.lineOk) : true;
+  const kanjiOk = kanjiProvided ? !okFrames.some((x) => x.kanjiProvided && !x.kanjiOk) : true;
+  const senseOk = senseProvided ? !okFrames.some((x) => x.senseProvided && !x.senseOk) : true;
+
+  return {
+    ok: true,
+    error: "",
+    jp: jpJoined,
+    en: enJoined,
+    hasExtra,
+    kanjiOk,
+    senseOk,
+    lineOk,
+    lineProvided,
+    kanjiProvided,
+    senseProvided,
+    notes: notesJoined,
+    raw: rawJoined,
+    perFrame,
+  };
+}
+
+async function evaluateCandidateAv(item, args, avCtx) {
+  const queryMatcher = avCtx?.matcher || { forms: [args.query], exclude: [] };
+  const forms = normalizeMatchArray(queryMatcher?.forms || [args.query]);
+  const kanjiForms = forms.filter((f) => hasKanji(f));
+  const expectedMeaning = normalizeMeaning(String(avCtx?.wordEntry?.meaning || args.meaning || ""));
+  const avCache = avCtx?.cache || avCtx?.av?.cache || null;
+  const avRunId = String(avCtx?.runId || avCtx?.av?.runId || `run_${Date.now()}_${process.pid}`).trim();
+  const key = [
+    item.videoFile,
+    item.clipStartMs,
+    item.clipEndMs,
+    item.matchText || "",
+    expectedMeaning,
+    args.avWhisperModel,
+    args.avWhisperLanguage,
+    args.avVisionModel,
+    String(Boolean(args.avQueryOnly)),
+    Number(args.avMinAsrSim || 0),
+    Number(args.avMinVisionSim || 0),
+  ].join("|");
+  if (avCache?.has(key)) return avCache.get(key);
+
+  const result = {
+    ok: true,
+    reasons: [],
+    meta: {
+      asrText: "",
+      visionJp: "",
+      visionEn: "",
+      asrSim: 0,
+      visionSim: 0,
+      frameCount: 0,
+      asrStartMs: null,
+      asrEndMs: null,
+      expectedMeaning,
+      meaningHits: 0,
+      visionNotes: "",
+    },
+  };
+  const fail = (reason) => {
+    result.ok = false;
+    result.reasons.push(String(reason || "").trim());
+  };
+
+  const video = String(item.videoFile || "").trim();
+  if (!video || !fs.existsSync(video)) {
+    fail("av_missing_video");
+    if (avCache) avCache.set(key, result);
+    return result;
+  }
+
+  const evalDir = path.resolve(args.outDir, "_av_eval", safeFilename(avRunId));
+  fs.mkdirSync(evalDir, { recursive: true });
+  const sig = crypto
+    .createHash("md5")
+    .update(`${video}:${item.clipStartMs}:${item.clipEndMs}:${avRunId}`)
+    .digest("hex")
+    .slice(0, 12);
+  const audioFile = path.join(evalDir, `${safeFilename(args.query)}_${sig}.wav`);
+  const frameTimes = buildEvalFrameTimes(item.clipStartMs, item.clipEndMs);
+  const imageFiles = frameTimes.map((_, i) =>
+    path.join(evalDir, `${safeFilename(args.query)}_${sig}_f${String(i + 1).padStart(2, "0")}.jpg`),
+  );
+  result.meta.frameCount = imageFiles.length;
+  const jpCandidate = normalizeJapaneseText(item.sentenceText || "");
+  const lineTerm = normalizeJapaneseText(item.matchText || "");
+
+  if (lineTerm && jpCandidate && !jpCandidate.includes(lineTerm)) {
+    fail("av_line_mismatch");
+  }
+  if (forms.length > 0 && !includesAnyNormalized(item.sentenceText || "", forms)) {
+    fail("av_query_not_in_line");
+  }
+  if (kanjiForms.length > 0 && !includesAnyNormalized(item.sentenceText || "", kanjiForms)) {
+    fail("av_kanji_line_missing");
+  }
+
+  // Audio is the hard first gate. If target form is missing in ASR, reject before vision.
+  try {
+    ffmpegExtractAudioForEval({
+      input: video,
+      startMs: item.clipStartMs,
+      endMs: item.clipEndMs,
+      output: audioFile,
+      verbose: args.verbose,
+    });
+  } catch {
+    fail("av_extract_audio_failed");
+    if (avCache) avCache.set(key, result);
+    return result;
+  }
+
+  const asr = runWhisperForEval({
+    audioFile,
+    model: args.avWhisperModel,
+    language: args.avWhisperLanguage,
+    workDir: evalDir,
+    verbose: args.verbose,
+  });
+  result.meta.asrText = asr.text || "";
+  result.meta.asrStartMs = Number.isFinite(asr.startMs) ? asr.startMs : null;
+  result.meta.asrEndMs = Number.isFinite(asr.endMs) ? asr.endMs : null;
+  const jpAsr = normalizeJapaneseText(asr.text || "");
+  const enCandidate = normalizeEnglishText(item.enText || "");
+
+  if (!asr.ok || !jpAsr) {
+    fail("av_asr_failed");
+    result.reasons = Array.from(new Set(result.reasons.filter(Boolean)));
+    if (avCache) avCache.set(key, result);
+    return result;
+  } else {
+    const asrSim = diceSimilarity(jpCandidate, jpAsr);
+    result.meta.asrSim = Number(asrSim.toFixed(3));
+    if (forms.length > 0 && !includesAnyNormalized(asr.text || "", forms)) {
+      fail("av_query_not_in_audio");
+      result.reasons = Array.from(new Set(result.reasons.filter(Boolean)));
+      if (avCache) avCache.set(key, result);
+      return result;
+    }
+    if (!args.avQueryOnly && asrSim < Number(args.avMinAsrSim || 0.5)) {
+      fail("av_audio_mismatch");
+      result.reasons = Array.from(new Set(result.reasons.filter(Boolean)));
+      if (avCache) avCache.set(key, result);
+      return result;
+    }
+  }
+
+  // Vision runs only after audio gate succeeds; it only checks subtitle alignment quality.
+  if (args.avVisionModel) {
+    try {
+      for (let i = 0; i < imageFiles.length; i++) {
+        ffmpegCaptureFrameForEval({
+          input: video,
+          timeMs: frameTimes[i],
+          output: imageFiles[i],
+          verbose: args.verbose,
+        });
+      }
+    } catch {
+      fail("av_extract_frames_failed");
+      result.reasons = Array.from(new Set(result.reasons.filter(Boolean)));
+      if (avCache) avCache.set(key, result);
+      return result;
+    }
+
+    const vision = await runVisionSubtitleEval({
+      imageFiles,
+      model: args.avVisionModel,
+      host: args.avOllamaHost,
+      timeoutMs: args.avTimeoutMs,
+      query: args.matchContains || args.query,
+      matchText: item.matchText || args.query,
+      candidateJp: item.sentenceText || "",
+      candidateEn: enCandidate,
+      asrJp: asr.text || "",
+    });
+    result.meta.visionJp = vision.jp || "";
+    result.meta.visionEn = vision.en || "";
+    result.meta.visionNotes = String(vision.notes || vision.error || "");
+    const jpVision = normalizeJapaneseText(vision.jp || "");
+    if (!vision.ok) {
+      fail("av_vision_failed");
+      if (args.verbose) {
+        const rawHead = String(vision.raw || "").replace(/\s+/g, " ").slice(0, 240);
+        console.log(
+          `[av] vision failed (${vision.error || "unknown"}) model=${args.avVisionModel} raw="${rawHead}"`,
+        );
+      }
+    } else if (!jpVision) {
+      fail("av_vision_empty");
+    } else {
+      if (forms.length > 0 && !includesAnyNormalized(vision.jp || "", forms)) {
+        fail("av_query_not_in_vision");
+      }
+      const visionSim = diceSimilarity(jpCandidate, jpVision);
+      result.meta.visionSim = Number(visionSim.toFixed(3));
+      if (visionSim < Number(args.avMinVisionSim || 0.42)) {
+        fail("av_vision_mismatch");
+      }
+      if (vision.lineProvided && !vision.lineOk) {
+        fail("av_line_vision_mismatch");
+      }
+      const trailingHint =
+        vision.hasExtra ||
+        (jpCandidate &&
+          jpVision &&
+          jpVision.includes(jpCandidate) &&
+          jpVision.length >= jpCandidate.length + 4);
+      if (trailingHint) {
+        fail("av_trailing");
+      }
+    }
+  }
+
+  result.reasons = Array.from(new Set(result.reasons.filter(Boolean)));
+  if (avCache) avCache.set(key, result);
+  return result;
+}
+
+function proposeAvTrimFromAsr(item, avMeta) {
+  const relStart = Number(avMeta?.asrStartMs);
+  const relEnd = Number(avMeta?.asrEndMs);
+  if (!Number.isFinite(relStart) || !Number.isFinite(relEnd) || relEnd <= relStart) return null;
+  const clipStart = Number(item?.clipStartMs);
+  const clipEnd = Number(item?.clipEndMs);
+  if (!Number.isFinite(clipStart) || !Number.isFinite(clipEnd) || clipEnd <= clipStart) return null;
+  const pre = 120;
+  const post = 180;
+  let nextStart = clipStart + Math.max(0, relStart - pre);
+  let nextEnd = clipStart + relEnd + post;
+  nextStart = Math.max(0, Math.min(nextStart, clipEnd - 300));
+  nextEnd = Math.max(nextStart + 360, Math.min(nextEnd, clipEnd));
+  if (nextEnd - nextStart >= clipEnd - clipStart - 60) return null;
+  return {
+    startMs: Math.round(nextStart),
+    endMs: Math.round(nextEnd),
+  };
+}
+
+async function applyAvEvalAndAutoReplace(selected, pool, args, gateCtx) {
+  const out = selected.map((x) => ({ ...x }));
+  const used = new Set(out.map((x) => Number(x.candidateIndex)).filter((n) => Number.isInteger(n)));
+  const audit = [];
+  const hardFailReasons = new Set([
+    "av_query_not_in_audio",
+    "av_asr_failed",
+    "av_query_not_in_line",
+    "av_kanji_line_missing",
+  ]);
+
+  for (let i = 0; i < out.length; i++) {
+    const slot = i + 1;
+    const current = out[i];
+    const currentAv = await evaluateCandidateAv(current, args, gateCtx || {});
+    out[i].avMeta = currentAv.meta;
+    out[i].avReasons = currentAv.reasons;
+    const fromIdx = Number(current.candidateIndex) || null;
+
+    if (currentAv.ok) {
+      audit.push({
+        stage: "av",
+        slot,
+        kept: true,
+        from: fromIdx,
+        to: fromIdx,
+        reasons: [],
+      });
+      continue;
+    }
+
+    const isHardFail = currentAv.reasons.some((r) => hardFailReasons.has(String(r)));
+    const trimReasons = new Set(["av_trailing", "av_audio_mismatch", "av_vision_mismatch"]);
+    const shouldTryTrim = !isHardFail && currentAv.reasons.some((r) => trimReasons.has(String(r)));
+    if (shouldTryTrim) {
+      const trim = proposeAvTrimFromAsr(current, currentAv.meta);
+      if (trim) {
+        const trimmed = {
+          ...current,
+          clipStartMs: trim.startMs,
+          clipEndMs: trim.endMs,
+          trimmedFrom: {
+            clipStartMs: current.clipStartMs,
+            clipEndMs: current.clipEndMs,
+          },
+        };
+        const trimmedAv = await evaluateCandidateAv(trimmed, args, gateCtx || {});
+        if (trimmedAv.ok) {
+          trimmed.avMeta = trimmedAv.meta;
+          trimmed.avReasons = [];
+          out[i] = trimmed;
+          audit.push({
+            stage: "av",
+            slot,
+            kept: false,
+            from: fromIdx,
+            to: fromIdx,
+            reasons: currentAv.reasons,
+            action: "trim",
+          });
+          continue;
+        }
+      }
+    }
+
+    let replacement = null;
+    let avTried = 0;
+    for (const cand of pool) {
+      const shouldCapSearch =
+        !isHardFail &&
+        Number.isFinite(Number(args.avMaxSwapCandidates)) &&
+        Number(args.avMaxSwapCandidates) > 0 &&
+        avTried >= Number(args.avMaxSwapCandidates);
+      if (shouldCapSearch) {
+        break;
+      }
+      const idx = Number(cand.candidateIndex);
+      if (!Number.isInteger(idx) || used.has(idx)) continue;
+      const quick = fitAndGateCandidate(cand, args, gateCtx);
+      if (!quick.quality.ok) continue;
+      const av = await evaluateCandidateAv(quick.candidate, args, gateCtx || {});
+      avTried++;
+      if (!av.ok) continue;
+      replacement = { candidate: quick.candidate, av };
+      break;
+    }
+
+    if (replacement) {
+      const toIdx = Number(replacement.candidate.candidateIndex) || null;
+      if (fromIdx && used.has(fromIdx)) used.delete(fromIdx);
+      if (toIdx) used.add(toIdx);
+      replacement.candidate.replacedFrom = fromIdx;
+      replacement.candidate.avMeta = replacement.av.meta;
+      replacement.candidate.avReasons = [];
+      out[i] = replacement.candidate;
+      audit.push({
+        stage: "av",
+        slot,
+        kept: false,
+        from: fromIdx,
+        to: toIdx,
+        reasons: currentAv.reasons,
+      });
+    } else {
+      if (isHardFail) {
+        if (fromIdx && used.has(fromIdx)) used.delete(fromIdx);
+        out[i] = null;
+        audit.push({
+          stage: "av",
+          slot,
+          kept: false,
+          from: fromIdx,
+          to: null,
+          reasons: currentAv.reasons,
+          action: "drop",
+        });
+      } else {
+        audit.push({
+          stage: "av",
+          slot,
+          kept: true,
+          from: fromIdx,
+          to: fromIdx,
+          reasons: currentAv.reasons,
+        });
+      }
+    }
+  }
+
+  return { selected: out.filter(Boolean), audit };
 }
 
 function fitAndGateCandidate(item, args, gateCtx) {
@@ -1568,6 +2616,77 @@ function applyQualityGatesAndAutoReplace(selected, pool, args, gateCtx) {
         reasons: currentEval.quality.reasons,
       });
     }
+  }
+
+  return { selected: out, audit };
+}
+
+function enforceUniqueSentenceSelection(selected, pool) {
+  if (!Array.isArray(selected) || selected.length === 0) {
+    return { selected: [], audit: [] };
+  }
+  const out = selected.map((x) => ({ ...x }));
+  const usedIdx = new Set(
+    out.map((x) => Number(x.candidateIndex)).filter((n) => Number.isInteger(n)),
+  );
+  const usedSentence = new Set();
+  const audit = [];
+
+  for (let i = 0; i < out.length; i++) {
+    const slot = i + 1;
+    const current = out[i];
+    const fromIdx = Number(current?.candidateIndex) || null;
+    const currentKey = normalizeSentenceKey(current?.sentenceText || "");
+    const isDup = Boolean(currentKey && usedSentence.has(currentKey));
+    if (!isDup) {
+      if (currentKey) usedSentence.add(currentKey);
+      audit.push({
+        stage: "dedupe",
+        slot,
+        kept: true,
+        from: fromIdx,
+        to: fromIdx,
+        reasons: [],
+      });
+      continue;
+    }
+
+    let replacement = null;
+    for (const cand of pool || []) {
+      const idx = Number(cand?.candidateIndex);
+      if (!Number.isInteger(idx) || usedIdx.has(idx)) continue;
+      const key = normalizeSentenceKey(cand?.sentenceText || "");
+      if (key && usedSentence.has(key)) continue;
+      replacement = { ...cand, replacedFrom: fromIdx };
+      break;
+    }
+
+    if (!replacement) {
+      audit.push({
+        stage: "dedupe",
+        slot,
+        kept: true,
+        from: fromIdx,
+        to: fromIdx,
+        reasons: ["duplicate_sentence"],
+      });
+      continue;
+    }
+
+    const toIdx = Number(replacement.candidateIndex) || null;
+    if (fromIdx && usedIdx.has(fromIdx)) usedIdx.delete(fromIdx);
+    if (toIdx) usedIdx.add(toIdx);
+    const repKey = normalizeSentenceKey(replacement.sentenceText || "");
+    if (repKey) usedSentence.add(repKey);
+    out[i] = replacement;
+    audit.push({
+      stage: "dedupe",
+      slot,
+      kept: false,
+      from: fromIdx,
+      to: toIdx,
+      reasons: ["duplicate_sentence"],
+    });
   }
 
   return { selected: out, audit };
@@ -2733,6 +3852,10 @@ async function main() {
     console.error('--enLinePolicy must be "best", "nearest", or "merge"');
     printHelpAndExit(1);
   }
+  if (!["anywhere", "middle"].includes(args.wordPlacement)) {
+    console.error('--wordPlacement must be "anywhere" or "middle"');
+    printHelpAndExit(1);
+  }
   if (args.concatOnly) {
     args.concat = true;
   }
@@ -3019,10 +4142,14 @@ async function main() {
   selected = applyReplaceRules(selected, pool, args.replace);
   selected = selected.map((x) => ({ ...x }));
 
+  const effectiveAutoReplaceBad =
+    args.autoReplaceBad && (!args.pick || args.autoReplaceWithPick);
+  const gateArgs = { ...args, autoReplaceBad: effectiveAutoReplaceBad };
+
   const gateAudit = [];
-  if (args.clipFit || args.autoReplaceBad || args.enPolishModel) {
+  let gateTokenizer = null;
+  if (args.clipFit || effectiveAutoReplaceBad || args.enPolishModel || args.avEval) {
     const dicPath = path.join("node_modules", "kuromoji", "dict");
-    let gateTokenizer = null;
     try {
       gateTokenizer = await buildTokenizer(dicPath);
     } catch (err) {
@@ -3030,22 +4157,51 @@ async function main() {
         console.log(`Gate tokenizer init failed; continuing without lemma lock: ${err?.message || err}`);
       }
     }
-    const gated = applyQualityGatesAndAutoReplace(selected, pool, args, {
-      matcher: queryMatcher,
-      tokenizer: gateTokenizer,
-    });
+  }
+
+  const avRunId = `av_${Date.now()}_${process.pid}_${Math.random().toString(16).slice(2, 8)}`;
+  const gateCtx = {
+    matcher: queryMatcher,
+    tokenizer: gateTokenizer,
+    wordEntry: queryWordEntry,
+    runId: avRunId,
+    cache: new Map(),
+    av: { cache: new Map(), runId: avRunId },
+  };
+
+  if (args.clipFit || effectiveAutoReplaceBad || args.enPolishModel) {
+    const gated = applyQualityGatesAndAutoReplace(selected, pool, gateArgs, gateCtx);
     selected = gated.selected;
     gateAudit.push(...gated.audit);
-    for (const a of gateAudit) {
-      const from = Number.isInteger(Number(a.from)) ? `#${a.from}` : "(n/a)";
-      const to = Number.isInteger(Number(a.to)) ? `#${a.to}` : "(n/a)";
-      const reasons = Array.isArray(a.reasons) && a.reasons.length > 0 ? a.reasons.join(",") : "none";
-      if (a.kept) {
-        if (reasons !== "none") {
-          console.log(`[gate] slot${a.slot} kept ${from} reasons=${reasons}`);
-        }
+  }
+
+  if (args.avEval) {
+    const avGated = await applyAvEvalAndAutoReplace(selected, pool, gateArgs, gateCtx);
+    selected = avGated.selected;
+    gateAudit.push(...avGated.audit);
+  }
+
+  const deduped = enforceUniqueSentenceSelection(selected, pool);
+  selected = deduped.selected;
+  gateAudit.push(...deduped.audit);
+
+  for (const a of gateAudit) {
+    const from = Number.isInteger(Number(a.from)) ? `#${a.from}` : "(n/a)";
+    const to = Number.isInteger(Number(a.to)) ? `#${a.to}` : "(n/a)";
+    const reasons = Array.isArray(a.reasons) && a.reasons.length > 0 ? a.reasons.join(",") : "none";
+    const stage = String(a.stage || "text");
+    const action = String(a.action || "");
+    if (a.kept) {
+      if (reasons !== "none") {
+        console.log(`[gate:${stage}] slot${a.slot} kept ${from} reasons=${reasons}`);
+      }
+    } else {
+      if (action === "trim") {
+        console.log(`[gate:${stage}] slot${a.slot} trimmed ${from} reasons=${reasons}`);
+      } else if (action === "drop") {
+        console.log(`[gate:${stage}] slot${a.slot} dropped ${from} reasons=${reasons}`);
       } else {
-        console.log(`[gate] slot${a.slot} auto-replaced ${from} -> ${to} reasons=${reasons}`);
+        console.log(`[gate:${stage}] slot${a.slot} auto-replaced ${from} -> ${to} reasons=${reasons}`);
       }
     }
   }
@@ -3096,6 +4252,17 @@ async function main() {
     outputDir,
     args.flatOut ? `manifest.${querySlug}.json` : "manifest.json",
   );
+  if (manifest.length === 0) {
+    if (args.writeManifest) {
+      fs.writeFileSync(
+        manifestPath,
+        JSON.stringify({ query: args.query, clips: manifest }, null, 2),
+      );
+    }
+    console.error(`No valid clips remain for "${args.query}" after AV/text gates.`);
+    process.exit(4);
+  }
+
   if (args.writeManifest) {
     fs.writeFileSync(
       manifestPath,

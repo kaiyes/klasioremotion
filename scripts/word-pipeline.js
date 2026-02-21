@@ -19,6 +19,7 @@ const DEFAULTS = {
   maxPerWord: 50,
   maxCandidates: 50,
   mode: "line",
+  wordPlacement: "anywhere", // anywhere | middle
   enLinePolicy: "best",
   model: "llama3.2:3b",
   printEvery: 25,
@@ -72,6 +73,9 @@ Options:
   --maxPerWord <n>         Default: ${DEFAULTS.maxPerWord}
   --maxCandidates <n>      Default: ${DEFAULTS.maxCandidates}
   --mode <line|sentence>   Default: ${DEFAULTS.mode}
+  --wordPlacement <mode>   Word position gate: anywhere|middle (default: ${DEFAULTS.wordPlacement})
+  --wordMiddle             Alias for --wordPlacement middle
+  --wordAnywhere           Alias for --wordPlacement anywhere
   --enLinePolicy <p>       best|nearest|merge (default: ${DEFAULTS.enLinePolicy})
   --model <name>           Default: ${DEFAULTS.model}
   --printEvery <n>         Default: ${DEFAULTS.printEvery}
@@ -208,6 +212,16 @@ function parseArgs(argv) {
         args.mode = String(v || "").trim().toLowerCase();
         takeNext();
         break;
+      case "wordPlacement":
+        args.wordPlacement = String(v || "").trim().toLowerCase();
+        takeNext();
+        break;
+      case "wordMiddle":
+        args.wordPlacement = "middle";
+        break;
+      case "wordAnywhere":
+        args.wordPlacement = "anywhere";
+        break;
       case "enLinePolicy":
         args.enLinePolicy = String(v || "").trim().toLowerCase();
         takeNext();
@@ -304,6 +318,9 @@ function parseArgs(argv) {
   }
   if (!["line", "sentence"].includes(args.mode)) {
     throw new Error(`--mode must be "line" or "sentence".`);
+  }
+  if (!["anywhere", "middle"].includes(args.wordPlacement)) {
+    throw new Error(`--wordPlacement must be "anywhere" or "middle".`);
   }
   if (!["best", "nearest", "merge"].includes(args.enLinePolicy)) {
     throw new Error(`--enLinePolicy must be "best", "nearest", or "merge".`);
@@ -447,7 +464,7 @@ function printRenderedOutputsFromManifest(manifest, outRoot) {
 }
 
 function generatedShortOutputPath(outputDir, word) {
-  return path.join(outputDir, `${safeFilename(word)}_clean_shorts.mp4`);
+  return path.join(outputDir, `${safeFilename(word)}.mp4`);
 }
 
 function canonicalShortOutputPath(outputDir, word) {
@@ -457,10 +474,15 @@ function canonicalShortOutputPath(outputDir, word) {
 function finalizeShortOutputFile(outputDir, word) {
   const generated = generatedShortOutputPath(outputDir, word);
   const canonical = canonicalShortOutputPath(outputDir, word);
+  const legacy = path.join(outputDir, `${safeFilename(word)}_clean_shorts.mp4`);
   if (fs.existsSync(generated) && path.resolve(generated) !== path.resolve(canonical)) {
     fs.renameSync(generated, canonical);
   }
+  if (fs.existsSync(legacy) && !fs.existsSync(canonical)) {
+    fs.renameSync(legacy, canonical);
+  }
   if (fs.existsSync(canonical)) return canonical;
+  if (fs.existsSync(legacy)) return legacy;
   if (fs.existsSync(generated)) return generated;
   return canonical;
 }
@@ -472,6 +494,13 @@ function safeFilename(s) {
     .replace(/[\/\\?%*:|"<>]/g, "_")
     .replace(/\s+/g, "_")
     .slice(0, 80);
+}
+
+function normalizeSentenceKey(text) {
+  return String(text || "")
+    .replace(/[\s　]+/g, "")
+    .replace(/[。！？!?…〜~ー―—・、,，.]/g, "")
+    .toLowerCase();
 }
 
 function uniquePositiveInts(values) {
@@ -507,6 +536,18 @@ function resolveRerankFile(outRoot) {
   const saveFileBackup = path.resolve(outRoot, "..", "saveFile", SAVEFILE_RERANK_BACKUP_FILENAME);
   if (fs.existsSync(saveFileBackup)) return saveFileBackup;
   return primary;
+}
+
+function loadDbWordMap(outRoot) {
+  const dbFile = path.resolve(outRoot, "word-candidates-db.json");
+  if (!fs.existsSync(dbFile)) return new Map();
+  try {
+    const db = readJson(dbFile);
+    const words = Array.isArray(db?.words) ? db.words : [];
+    return new Map(words.map((rec) => [String(rec?.word || ""), rec]));
+  } catch {
+    return new Map();
+  }
 }
 
 function preflightRender(args, outRoot) {
@@ -612,7 +653,41 @@ function backfillPicks(picks, maxCandidate, targetCount) {
   return out;
 }
 
-function buildVerticalShortCli(args, outRoot, word, picks) {
+function backfillPicksBySentence(picks, candidates, targetCount) {
+  const pool = Array.isArray(candidates) ? candidates : [];
+  const maxCandidate = pool.length;
+  if (maxCandidate <= 0) return [];
+  const desired = Math.max(0, Number(targetCount) || 0);
+  if (desired <= 0) return [];
+
+  const out = [];
+  const usedIdx = new Set();
+  const seenSentence = new Set();
+
+  const tryAdd = (idx) => {
+    if (!Number.isInteger(idx) || idx <= 0 || idx > maxCandidate || usedIdx.has(idx)) {
+      return false;
+    }
+    const c = pool[idx - 1] || {};
+    const key = normalizeSentenceKey(c.sentenceText || c.jpText || `idx:${idx}`);
+    if (key && seenSentence.has(key)) return false;
+    usedIdx.add(idx);
+    if (key) seenSentence.add(key);
+    out.push(idx);
+    return true;
+  };
+
+  for (const idx of uniquePositiveInts(picks)) {
+    if (out.length >= desired) break;
+    tryAdd(idx);
+  }
+  for (let idx = 1; idx <= maxCandidate && out.length < desired; idx++) {
+    tryAdd(idx);
+  }
+  return out;
+}
+
+function buildVerticalShortCli(args, outRoot, word, picks, opts = {}) {
   const outDir = path.resolve(outRoot, "work");
   const outputDir = path.resolve(outRoot);
   const cli = [
@@ -631,21 +706,25 @@ function buildVerticalShortCli(args, outRoot, word, picks) {
     outputDir,
     "--mode",
     args.mode,
+    "--wordPlacement",
+    args.wordPlacement,
     "--limit",
     String(picks.length),
     "--pick",
     picks.join(","),
     "--rank",
+    "--autoReplaceWithPick",
     "--prePadMs",
     "0",
     "--postPadMs",
     "0",
     "--maxClipMs",
-    "2000",
+    "3200",
     "--longPolicy",
-    "skip",
+    "shrink",
     "--keepOutputs",
   ];
+  if (opts.candidatesIn) cli.push("--candidatesIn", opts.candidatesIn);
   if (args.enSubsDir) cli.push("--enSubsDir", args.enSubsDir);
   if (args.verbose) cli.push("--verbose");
   return cli;
@@ -655,6 +734,7 @@ function runShortRenderStage(args, outRoot) {
   const preflight = preflightRender(args, outRoot);
   const rerankWords = Array.isArray(preflight.rerank?.words) ? preflight.rerank.words : [];
   const rerankMap = new Map(rerankWords.map((rec) => [String(rec?.word || ""), rec]));
+  const dbWordMap = loadDbWordMap(outRoot);
   const targets = preflight.targets;
   const outputDir = path.resolve(outRoot);
 
@@ -712,7 +792,22 @@ function runShortRenderStage(args, outRoot) {
 
     manifest.summary.attempted++;
     const canRenderStatus = status === "ok" || (args.allowFallbackRender && status === "fallback");
-    if (!canRenderStatus || picks.length === 0) {
+    const dbRec = dbWordMap.get(word);
+    const dbCandidates = Array.isArray(dbRec?.candidates) ? dbRec.candidates : [];
+    const dbPoolCap = Math.min(
+      dbCandidates.length,
+      Number.isFinite(args.maxCandidates) && args.maxCandidates > 0
+        ? args.maxCandidates
+        : dbCandidates.length,
+    );
+
+    let note = null;
+    if (picks.length === 0 && dbPoolCap > 0) {
+      picks = Array.from({ length: Math.min(args.topK, dbPoolCap) }, (_, idx) => idx + 1);
+      note = "db_fallback_topk";
+    }
+
+    if (!canRenderStatus && picks.length === 0) {
       manifest.summary.skipped++;
       manifest.words.push({
         word,
@@ -728,8 +823,44 @@ function runShortRenderStage(args, outRoot) {
     }
 
     let finalPicks = picks;
-    let note = null;
-    const cli = () => buildVerticalShortCli(args, outRoot, word, finalPicks);
+    let candidatesInFile = null;
+    if (dbPoolCap > 0) {
+      const workDir = path.resolve(outRoot, "work");
+      fs.mkdirSync(workDir, { recursive: true });
+      const dbPool = dbCandidates.slice(0, dbPoolCap);
+      candidatesInFile = path.join(workDir, `.tmp_candidates_${safeFilename(word)}.json`);
+      writeJson(candidatesInFile, {
+        query: word,
+        source: "db",
+        candidateCount: dbPool.length,
+        pool: dbPool,
+      });
+      finalPicks = backfillPicksBySentence(finalPicks, dbPool, args.topK);
+      if (finalPicks.length === 0) {
+        if (candidatesInFile && fs.existsSync(candidatesInFile)) {
+          try {
+            fs.rmSync(candidatesInFile, { force: true });
+          } catch {
+            // ignore temp cleanup failures
+          }
+        }
+        manifest.summary.skipped++;
+        manifest.words.push({
+          word,
+          status: "skipped",
+          reason: "no_valid_picks_after_db_mapping",
+          picks: [],
+          output,
+          error: null,
+        });
+        continue;
+      }
+    }
+
+    const cli = () =>
+      buildVerticalShortCli(args, outRoot, word, finalPicks, {
+        candidatesIn: candidatesInFile,
+      });
 
     try {
       if (args.dryRun) {
@@ -786,6 +917,14 @@ function runShortRenderStage(args, outRoot) {
         output,
         error: err?.message || String(err),
       });
+    } finally {
+      if (candidatesInFile && fs.existsSync(candidatesInFile)) {
+        try {
+          fs.rmSync(candidatesInFile, { force: true });
+        } catch {
+          // ignore temp cleanup failures
+        }
+      }
     }
   }
 

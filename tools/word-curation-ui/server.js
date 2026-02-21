@@ -32,6 +32,20 @@ const UI_PRE_PAD_MS = Math.max(0, Number(process.env.UI_PRE_PAD_MS || 350));
 const UI_POST_PAD_MS = Math.max(0, Number(process.env.UI_POST_PAD_MS || 550));
 const UI_MAX_CLIP_MS = Math.max(500, Number(process.env.UI_MAX_CLIP_MS || 3200));
 const UI_MIN_PREVIEW_MS = Math.max(200, Number(process.env.UI_MIN_PREVIEW_MS || 1100));
+const UI_AV_EVAL = !/^(0|false|no|off)$/i.test(String(process.env.UI_AV_EVAL || "1"));
+const UI_AV_WHISPER_MODEL = String(process.env.UI_AV_WHISPER_MODEL || "medium").trim();
+const UI_AV_WHISPER_LANGUAGE = String(process.env.UI_AV_WHISPER_LANGUAGE || "Japanese").trim();
+const UI_AV_VISION_MODEL = String(process.env.UI_AV_VISION_MODEL || "qwen3-vl:8b").trim();
+const UI_AV_OLLAMA_HOST = String(process.env.UI_AV_OLLAMA_HOST || process.env.OLLAMA_HOST || "http://127.0.0.1:11434").trim();
+const UI_AV_MIN_ASR_SIM = Number.isFinite(Number(process.env.UI_AV_MIN_ASR_SIM))
+  ? Number(process.env.UI_AV_MIN_ASR_SIM)
+  : 0.5;
+const UI_AV_MIN_VISION_SIM = Number.isFinite(Number(process.env.UI_AV_MIN_VISION_SIM))
+  ? Number(process.env.UI_AV_MIN_VISION_SIM)
+  : 0.42;
+const UI_AV_TIMEOUT_MS = Number.isFinite(Number(process.env.UI_AV_TIMEOUT_MS))
+  ? Number(process.env.UI_AV_TIMEOUT_MS)
+  : 45000;
 
 const DEFAULT_JP_SUBS_DIR = path.join(
   ROOT,
@@ -137,6 +151,19 @@ function normalizeSlotPads(slotPads) {
     out.push({ candidateIndex, prePadMs: pre, postPadMs: post });
   }
   return out;
+}
+
+function appendUiAvEvalArgs(args) {
+  if (!UI_AV_EVAL) return;
+  args.push("--avEval");
+  args.push("--avQueryOnly");
+  if (UI_AV_WHISPER_MODEL) args.push("--avWhisperModel", UI_AV_WHISPER_MODEL);
+  if (UI_AV_WHISPER_LANGUAGE) args.push("--avWhisperLanguage", UI_AV_WHISPER_LANGUAGE);
+  if (UI_AV_VISION_MODEL) args.push("--avVisionModel", UI_AV_VISION_MODEL);
+  if (UI_AV_OLLAMA_HOST) args.push("--avOllamaHost", UI_AV_OLLAMA_HOST);
+  if (Number.isFinite(UI_AV_MIN_ASR_SIM)) args.push("--avMinAsrSim", String(UI_AV_MIN_ASR_SIM));
+  if (Number.isFinite(UI_AV_MIN_VISION_SIM)) args.push("--avMinVisionSim", String(UI_AV_MIN_VISION_SIM));
+  if (Number.isFinite(UI_AV_TIMEOUT_MS)) args.push("--avTimeoutMs", String(UI_AV_TIMEOUT_MS));
 }
 
 function loadFamilyMeaningMap(filePath = FAMILY_MEANINGS_FILE) {
@@ -1028,6 +1055,7 @@ async function runPickRender(job, {
       if (m) {
         args.push("--meaning", m);
       }
+      appendUiAvEvalArgs(args);
       appendJobLog(
         job,
         `Pick ${word}${fam ? ` family=${fam}` : ""}: ${pickCsv} (slot-pad overrides active)`,
@@ -1035,6 +1063,8 @@ async function runPickRender(job, {
       await runNode(args, job);
 
       const renderedOutCandidates = [
+        path.join(OUT_ROOT, `${safeFilename(word)}.mp4`),
+        path.join(OUT_ROOT, `${safeFilename(word)}_${safeFilename(fam)}.mp4`),
         path.join(OUT_ROOT, `${safeFilename(word)}_clean_shorts.mp4`),
         path.join(OUT_ROOT, `${safeFilename(word)}_${safeFilename(fam)}_clean_shorts.mp4`),
       ];
@@ -1140,14 +1170,19 @@ async function runPickRender(job, {
       if (m) {
         args.push("--meaning", m);
       }
+      appendUiAvEvalArgs(args);
 
       appendJobLog(job, `Pick ${word}: ${pickCsv} (pad=${prePad}/${postPad}ms)`);
       await runNode(args, job);
 
-      const renderedOut = path.join(OUT_ROOT, `${safeFilename(word)}_clean_shorts.mp4`);
+      const renderedOutCandidates = [
+        path.join(OUT_ROOT, `${safeFilename(word)}.mp4`),
+        path.join(OUT_ROOT, `${safeFilename(word)}_clean_shorts.mp4`),
+      ];
+      const renderedOut = renderedOutCandidates.find((p) => fs.existsSync(p));
       const canonical = path.join(OUT_ROOT, `${safeFilename(word)}.mp4`);
-      if (!fs.existsSync(renderedOut)) {
-        throw new Error(`Rendered output not found at ${renderedOut}`);
+      if (!renderedOut) {
+        throw new Error(`Rendered output not found for ${word}.`);
       }
       fs.copyFileSync(renderedOut, canonical);
       appendJobLog(job, `Copied output -> ${canonical}`);
@@ -1208,15 +1243,20 @@ async function runPickRender(job, {
   if (m) {
     args.push("--meaning", m);
   }
+  appendUiAvEvalArgs(args);
 
   appendJobLog(job, `Pick ${word}${fam ? ` family=${fam}` : ""}: ${pickCsv} (pad=${prePad}/${postPad}ms)`);
   await runNode(args, job);
 
   const outputSlug = fam ? `${safeFilename(word)}_${safeFilename(fam)}` : safeFilename(word);
-  const renderedOut = path.join(OUT_ROOT, `${outputSlug}_clean_shorts.mp4`);
+  const renderedOutCandidates = [
+    path.join(OUT_ROOT, `${outputSlug}.mp4`),
+    path.join(OUT_ROOT, `${outputSlug}_clean_shorts.mp4`),
+  ];
+  const renderedOut = renderedOutCandidates.find((p) => fs.existsSync(p));
   const canonical = path.join(OUT_ROOT, `${safeFilename(word)}.mp4`);
-  if (!fs.existsSync(renderedOut)) {
-    throw new Error(`Rendered output not found at ${renderedOut}`);
+  if (!renderedOut) {
+    throw new Error(`Rendered output not found for ${word}${fam ? ` family=${fam}` : ""}.`);
   }
   fs.copyFileSync(renderedOut, canonical);
   appendJobLog(job, `Copied output -> ${canonical}`);
