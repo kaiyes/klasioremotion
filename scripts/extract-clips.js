@@ -1076,6 +1076,8 @@ function scoreCandidate({
   enText,
   durationMs,
   matchCenterDistMs,
+  leadMs,
+  tailMs,
   query,
   matchText,
   boundaryBefore = true,
@@ -1088,10 +1090,21 @@ function scoreCandidate({
   const ideal = 2500;
   const durationScore = Math.max(0, 1 - Math.abs(durationMs - ideal) / 2500);
   score += durationScore * 30;
+  if (durationMs < 700) score -= 28;
+  else if (durationMs < 950) score -= 18;
+  else if (durationMs < 1200) score -= 9;
 
   if (durationMs > 0) {
     const centerScore = Math.max(0, 1 - matchCenterDistMs / (durationMs / 2));
     score += centerScore * 20;
+  }
+  if (Number.isFinite(leadMs)) {
+    if (leadMs < 80) score -= 14;
+    else if (leadMs < 150) score -= 7;
+  }
+  if (Number.isFinite(tailMs)) {
+    if (tailMs < 120) score -= 14;
+    else if (tailMs < 220) score -= 7;
   }
 
   const lenScore = Math.max(0, 1 - Math.abs(jpLen - 10) / 12);
@@ -1319,20 +1332,31 @@ function hasSenseMatchByLemma(tokenizer, jpText, query, matcher) {
   const source = normalizeJapaneseText(jpText);
   if (!source) return false;
   const queryText = String(query || "").trim();
-  const forms = new Set([queryText, ...(matcher?.forms || [])].map((x) => String(x || "").trim()));
-  forms.delete("");
+  const mode = normalizeMatcherMode(matcher?.mode);
+  const exact = new Set(Array.from(matcher?.exactTokens || []).map((x) => normalizeJapaneseText(x)));
+  const lemma = new Set(Array.from(matcher?.lemmaTokens || []).map((x) => normalizeJapaneseText(x)));
+  const family = new Set(
+    [queryText, ...(matcher?.forms || [])].map((x) => normalizeJapaneseText(String(x || "").trim())),
+  );
+  exact.delete("");
+  lemma.delete("");
+  family.delete("");
   const queryKanji = extractKanji(queryText);
   const tokens = tokenizer.tokenize(source);
   for (const t of tokens) {
-    const surf = String(t?.surface_form || "").trim();
-    const base = String(t?.basic_form && t.basic_form !== "*" ? t.basic_form : surf).trim();
-    const cand = [surf, base];
-    for (const v of cand) {
-      if (!v) continue;
-      if (forms.has(v)) {
-        if (!queryKanji) return true;
-        const vKanji = extractKanji(v);
-        if (vKanji && (vKanji.includes(queryKanji) || queryKanji.includes(vKanji))) return true;
+    const surf = normalizeJapaneseText(String(t?.surface_form || "").trim());
+    const base = normalizeJapaneseText(
+      String(t?.basic_form && t.basic_form !== "*" ? t.basic_form : t?.surface_form || "").trim(),
+    );
+    const reading = normalizeJapaneseText(toHiragana(t?.reading || t?.surface_form || ""));
+    const values = mode === "exact" ? [surf, reading] : mode === "lemma" ? [surf, base, reading] : [surf, base];
+    const bag = mode === "exact" ? exact : mode === "lemma" ? lemma : family;
+    for (const v of values) {
+      if (!v || !bag.has(v)) continue;
+      if (!queryKanji) return true;
+      const vKanji = extractKanji(v || surf || base);
+      if (!vKanji || vKanji === queryKanji || vKanji.includes(queryKanji) || queryKanji.includes(vKanji)) {
+        return true;
       }
     }
   }
@@ -1593,12 +1617,11 @@ function evaluateCandidateQuality(item, args, gateCtx) {
   const tailMs = Math.max(0, Number(item.clipEndMs || 0) - matchEndMs);
   const matchMidMs = (matchStartMs + matchEndMs) / 2;
   const matchPosRatio = durationMs > 0 ? (matchMidMs - Number(item.clipStartMs || 0)) / durationMs : 0.5;
-  if (durationMs >= 1600) {
-    if (leadMs < 120) reasons.push("head_cut");
-    if (tailMs < 220) reasons.push("tail_cut");
-    if (placementMode === "middle" && (matchPosRatio < 0.18 || matchPosRatio > 0.82)) {
-      reasons.push("edge_match");
-    }
+  if (durationMs < 950) reasons.push("too_short");
+  if (leadMs < 80) reasons.push("head_cut");
+  if (tailMs < 120) reasons.push("tail_cut");
+  if (placementMode === "middle" && (matchPosRatio < 0.18 || matchPosRatio > 0.82)) {
+    reasons.push("edge_match");
   }
 
   const overflow =
@@ -2936,15 +2959,58 @@ function normalizeMatchArray(values) {
   return out;
 }
 
-function buildQueryMatcher(query, wordEntry) {
+function normalizeMatcherMode(rawMode) {
+  const mode = String(rawMode || "")
+    .trim()
+    .toLowerCase();
+  if (mode === "exact" || mode === "lemma" || mode === "family") return mode;
+  return "lemma";
+}
+
+function buildTokenMatcherSets(query, wordEntry, tokenizer) {
+  const canonical = String(query ?? "").trim();
+  const reading = toHiragana(wordEntry?.reading || "");
+  const exact = new Set(
+    [canonical, reading]
+      .map((x) => normalizeJapaneseText(String(x || "")))
+      .filter(Boolean),
+  );
+  const lemma = new Set(exact);
+  if (!tokenizer || !canonical) {
+    return { exact, lemma, reading };
+  }
+
+  const queryTokens = tokenizer.tokenize(canonical);
+  for (const t of queryTokens || []) {
+    const surface = normalizeJapaneseText(t?.surface_form || "");
+    const base = normalizeJapaneseText(
+      t?.basic_form && t.basic_form !== "*" ? t.basic_form : t?.surface_form || "",
+    );
+    if (surface) {
+      exact.add(surface);
+      lemma.add(surface);
+    }
+    if (base) lemma.add(base);
+  }
+
+  return { exact, lemma, reading };
+}
+
+function buildQueryMatcher(query, wordEntry, tokenizer) {
   const canonical = String(query ?? "").trim();
   const fromWordList = wordEntry?.match || {};
+  const mode = normalizeMatcherMode(fromWordList.mode || wordEntry?.matchMode || wordEntry?.mode);
   const forms = normalizeMatchArray([canonical, ...(fromWordList.forms || [])]);
   const exclude = normalizeMatchArray(fromWordList.exclude || []);
+  const tokenSets = buildTokenMatcherSets(canonical, wordEntry, tokenizer);
   return {
     query: canonical,
+    mode,
     forms,
     exclude,
+    reading: tokenSets.reading,
+    exactTokens: tokenSets.exact,
+    lemmaTokens: tokenSets.lemma,
   };
 }
 
@@ -2964,13 +3030,76 @@ function isLikelyBoundaryBefore(text, idx) {
   return false;
 }
 
-function findMatchInText(text, matcher) {
+function findMatchInText(text, matcher, tokenizer) {
   const source = String(text || "");
   if (!source) return null;
 
   for (const blocked of matcher.exclude) {
     if (blocked && source.includes(blocked)) return null;
   }
+
+  if (matcher.mode === "family" || !tokenizer) {
+    return findFamilyMatchInText(source, matcher);
+  }
+
+  const normalized = normalizeJapaneseText(source);
+  if (!normalized) return null;
+
+  const queryKanji = extractKanji(matcher.query || "");
+  const tokens = tokenizeWithSpans(tokenizer, normalized);
+  const values =
+    matcher.mode === "exact"
+      ? matcher.exactTokens || new Set()
+      : matcher.lemmaTokens || new Set();
+
+  const hits = [];
+  for (const tok of tokens) {
+    const surface = normalizeJapaneseText(tok?.surface || tok?.surface_form || "");
+    const base = normalizeJapaneseText(
+      tok?.basic_form && tok.basic_form !== "*" ? tok.basic_form : tok?.surface || tok?.surface_form || "",
+    );
+    const reading = normalizeJapaneseText(toHiragana(tok?.reading || surface));
+    const surfaceKanji = extractKanji(surface);
+    const readingMatch =
+      matcher.reading &&
+      reading === normalizeJapaneseText(matcher.reading) &&
+      (!queryKanji || !surfaceKanji || surfaceKanji === queryKanji);
+    const tokenExact = values.has(surface) || readingMatch;
+    const tokenLemma = tokenExact || values.has(base);
+    const matched = matcher.mode === "exact" ? tokenExact : tokenLemma;
+    if (!matched) continue;
+    hits.push({
+      matchText: surface || base || matcher.query,
+      index: Number(tok.start) || 0,
+      length: Array.from(surface || base || matcher.query || "").length,
+      boundaryBefore: true,
+      tokenBase: base,
+      tokenSurface: surface,
+    });
+  }
+
+  if (hits.length === 0) return null;
+
+  hits.sort((a, b) => {
+    const aExact = normalizeJapaneseText(a.tokenSurface || "") === normalizeJapaneseText(matcher.query || "") ? 1 : 0;
+    const bExact = normalizeJapaneseText(b.tokenSurface || "") === normalizeJapaneseText(matcher.query || "") ? 1 : 0;
+    if (aExact !== bExact) return bExact - aExact;
+    const aBase = normalizeJapaneseText(a.tokenBase || "") === normalizeJapaneseText(matcher.query || "") ? 1 : 0;
+    const bBase = normalizeJapaneseText(b.tokenBase || "") === normalizeJapaneseText(matcher.query || "") ? 1 : 0;
+    if (aBase !== bBase) return bBase - aBase;
+    return a.index - b.index;
+  });
+
+  return {
+    matchText: hits[0].matchText,
+    index: hits[0].index,
+    boundaryBefore: true,
+  };
+}
+
+function findFamilyMatchInText(text, matcher) {
+  const source = String(text || "");
+  if (!source) return null;
 
   const matched = [];
   for (const form of matcher.forms) {
@@ -3993,10 +4122,19 @@ async function main() {
     }
   }
   const queryWordEntry = wordListEntries?.find((x) => x?.word === args.query) ?? null;
-  const queryMatcher = buildQueryMatcher(args.query, queryWordEntry);
+  let matchTokenizer = null;
+  try {
+    const dicPath = path.join("node_modules", "kuromoji", "dict");
+    matchTokenizer = await buildTokenizer(dicPath);
+  } catch (err) {
+    if (args.verbose) {
+      console.log(`Matcher tokenizer init failed; falling back to family matcher: ${err?.message || err}`);
+    }
+  }
+  const queryMatcher = buildQueryMatcher(args.query, queryWordEntry, matchTokenizer);
   if (args.verbose) {
     console.log(
-      `Query matcher forms=${queryMatcher.forms.length} exclude=${queryMatcher.exclude.length}`,
+      `Query matcher mode=${queryMatcher.mode} forms=${queryMatcher.forms.length} exclude=${queryMatcher.exclude.length}`,
     );
   }
   const planned = [];
@@ -4045,7 +4183,7 @@ async function main() {
 
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
-        const matchInfo = findMatchInText(it.text, queryMatcher);
+        const matchInfo = findMatchInText(it.text, queryMatcher, matchTokenizer);
         if (!matchInfo) continue;
         const matchText = matchInfo.matchText;
         if (args.matchContains && !matchText.includes(args.matchContains)) continue;
@@ -4123,11 +4261,15 @@ async function main() {
           (estimated.matchStartMs + estimated.matchEndMs) / 2 -
             (clipStartMs + clipEndMs) / 2,
         );
+        const leadMs = Math.max(0, estimated.matchStartMs - clipStartMs);
+        const tailMs = Math.max(0, clipEndMs - estimated.matchEndMs);
         const score = scoreCandidate({
           jpText: sentenceText,
           enText,
           durationMs: clipEndMs - clipStartMs,
           matchCenterDistMs,
+          leadMs,
+          tailMs,
           query: args.matchContains || args.query,
           matchText,
           boundaryBefore: matchInfo.boundaryBefore !== false,
@@ -4254,8 +4396,8 @@ async function main() {
   const gateArgs = { ...args, autoReplaceBad: effectiveAutoReplaceBad };
 
   const gateAudit = [];
-  let gateTokenizer = null;
-  if (args.clipFit || effectiveAutoReplaceBad || args.enPolishModel || args.avEval) {
+  let gateTokenizer = matchTokenizer;
+  if (!gateTokenizer && (args.clipFit || effectiveAutoReplaceBad || args.enPolishModel || args.avEval)) {
     const dicPath = path.join("node_modules", "kuromoji", "dict");
     try {
       gateTokenizer = await buildTokenizer(dicPath);

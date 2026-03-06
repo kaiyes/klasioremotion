@@ -59,6 +59,11 @@ function parseArgs(argv) {
     workDir: DEFAULT_WORK_DIR,
     mode: "sentence",
     rank: true,
+    prePadMs: 350,
+    postPadMs: 650,
+    minClipMs: 1200,
+    maxClipMs: 3200,
+    longPolicy: "shrink",
     maxPerWord: 0,
     printEvery: 25,
     continueOnError: true,
@@ -126,6 +131,26 @@ function parseArgs(argv) {
       case "no-rank":
         args.rank = false;
         break;
+      case "prePadMs":
+        args.prePadMs = Number(v);
+        takeNext();
+        break;
+      case "postPadMs":
+        args.postPadMs = Number(v);
+        takeNext();
+        break;
+      case "minClipMs":
+        args.minClipMs = Number(v);
+        takeNext();
+        break;
+      case "maxClipMs":
+        args.maxClipMs = Number(v);
+        takeNext();
+        break;
+      case "longPolicy":
+        args.longPolicy = String(v || "").trim().toLowerCase();
+        takeNext();
+        break;
       case "maxPerWord":
         args.maxPerWord = Number(v);
         takeNext();
@@ -165,6 +190,21 @@ function parseArgs(argv) {
   if (args.mode !== "line" && args.mode !== "sentence") {
     throw new Error('--mode must be "line" or "sentence".');
   }
+  if (!Number.isFinite(args.prePadMs) || args.prePadMs < 0) {
+    throw new Error("--prePadMs must be >= 0.");
+  }
+  if (!Number.isFinite(args.postPadMs) || args.postPadMs < 0) {
+    throw new Error("--postPadMs must be >= 0.");
+  }
+  if (!Number.isFinite(args.minClipMs) || args.minClipMs < 0) {
+    throw new Error("--minClipMs must be >= 0.");
+  }
+  if (!Number.isFinite(args.maxClipMs) || args.maxClipMs <= 0) {
+    throw new Error("--maxClipMs must be > 0.");
+  }
+  if (!["skip", "shrink"].includes(args.longPolicy)) {
+    throw new Error('--longPolicy must be "skip" or "shrink".');
+  }
   return args;
 }
 
@@ -192,6 +232,11 @@ Options:
   --workDir <dir>           Temp json dir (default: ${DEFAULT_WORK_DIR})
   --mode <line|sentence>    Match mode passed to extract-clips (default: sentence)
   --rank / --no-rank        Candidate ranking toggle (default: rank)
+  --prePadMs <n>            Extra context before match (default: 350)
+  --postPadMs <n>           Extra context after match (default: 650)
+  --minClipMs <n>           Minimum candidate duration (default: 1200)
+  --maxClipMs <n>           Maximum candidate duration (default: 3200)
+  --longPolicy <p>          skip|shrink for long clips (default: shrink)
   --maxPerWord <n>          Keep at most N candidates per word (default: 0 = all)
   --printEvery <n>          Progress print interval (default: 25)
   --continueOnError         Keep going when a word fails (default: on)
@@ -360,13 +405,15 @@ function runExtractClips(word, args, tmpOutPath) {
     "--mode",
     args.mode,
     "--prePadMs",
-    "0",
+    String(args.prePadMs),
     "--postPadMs",
-    "0",
+    String(args.postPadMs),
+    "--minClipMs",
+    String(args.minClipMs),
     "--maxClipMs",
-    "5000",
+    String(args.maxClipMs),
     "--longPolicy",
-    "shrink",
+    String(args.longPolicy),
     "--limit",
     "1",
     "--dryRun",
@@ -480,10 +527,10 @@ function main() {
       }
     } else {
       const payload = fs.existsSync(tmpOutPath) ? readJson(tmpOutPath) : {};
-      let candidates = Array.isArray(payload.planned)
-        ? payload.planned
-        : Array.isArray(payload.pool)
-          ? payload.pool
+      let candidates = Array.isArray(payload.pool)
+        ? payload.pool
+        : Array.isArray(payload.planned)
+          ? payload.planned
           : [];
       if (args.maxPerWord > 0) candidates = candidates.slice(0, args.maxPerWord);
       const selected = Array.isArray(payload.selected) ? payload.selected : [];
