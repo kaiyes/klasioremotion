@@ -26,6 +26,15 @@ Open:
 5. Add reason.
 6. `Apply Picks + Stitch` (or `Apply Single Replace`).
 
+## Episode Range Short
+
+Use the `Range Short` button in the top bar (opens `/range-short.html`) to:
+- load videos from `source_content/...` and `out/source_content/...`
+- choose a start / end time (up to 3 minutes)
+- render a vertical short with JP + furigana + romaji + EN overlays
+
+Default output folder: `out/range-shorts`
+
 ## Notes
 
 - This UI runs local commands through API jobs:

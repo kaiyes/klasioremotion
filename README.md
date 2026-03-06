@@ -1,102 +1,66 @@
-# Remotion video
+# Klasio Remotion
 
-<p align="center">
-  <a href="https://github.com/remotion-dev/logo">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://github.com/remotion-dev/logo/raw/main/animated-logo-banner-dark.apng">
-      <img alt="Animated Remotion Logo" src="https://github.com/remotion-dev/logo/raw/main/animated-logo-banner-light.gif">
-    </picture>
-  </a>
-</p>
+This repo currently operates as a Node.js + ffmpeg anime vocab short pipeline.
 
-Welcome to your Remotion project!
+Remotion is still kept in the repo for the talking-head auto-short system, but it is not the main production path right now.
 
-## Commands
+## Start Here
 
-**Install Dependencies**
+Current at-a-glance overview:
+- [`ANIME_WORD_PIPELINE.md`](/home/kaiyes/projects/klasioremotion/ANIME_WORD_PIPELINE.md)
 
-```console
-npm i
-```
+Docs index:
+- [`docs/README.md`](/home/kaiyes/projects/klasioremotion/docs/README.md)
 
-**Start Preview**
+Operational command reference:
+- [`WORD_PIPELINE_COMMANDS.md`](/home/kaiyes/projects/klasioremotion/WORD_PIPELINE_COMMANDS.md)
 
-```console
-npm run dev
-```
+Rerank rules and recovery:
+- [`RERANKING.md`](/home/kaiyes/projects/klasioremotion/RERANKING.md)
 
-**Render video**
+## Current Production Flow
 
-```console
-npx remotion render
-```
+Active dataset:
+- `source_content/shingeki_no_kyojin/videos`
+- `source_content/shingeki_no_kyojin/subs/japanese`
+- `source_content/shingeki_no_kyojin/subs/english_embedded`
+- `source_content/all_anime_top_2000.match.first2000.json`
 
-## Auto Short Pipeline
+Primary pipeline wrapper:
+- `scripts/word-pipeline.js`
 
-The repo now includes an automated talking-head short pipeline:
+Typical commands:
 
-1. Put a source video anywhere in the repo (example: `src/make bank.mp4`)
-2. Generate subtitles + scene plan:
-
-```console
-npm run auto-short:plan -- --input "src/make bank.mp4"
-```
-
-3. Render:
-
-```console
-npm run auto-short:render
-```
-
-Output file: `out/auto-short/auto-short.mp4`
-
-## Automated Word-Clip Curation
-
-Use the short command aliases documented in:
-- `WORD_PIPELINE_COMMANDS.md`
-
-Quick examples:
-
-```console
+```bash
 npm run -s wp:one:fast -- 悪い
 npm run -s wp:rank:10:fast
 npm run -s wp:render:10:fast
+npm run -s word:board
 ```
 
-### Optional: Local LLM refinement
+What the pipeline does:
+1. Match words from the 2000-word list against JP subtitles.
+2. Build per-word candidate clips with EN subtitle alignment.
+3. Rank the best candidates with heuristics + Ollama.
+4. Render `1080x1920` learning shorts with ffmpeg.
 
-The default planner is heuristic-only.  
-To refine cut points and text with an OpenAI-compatible local server:
+## Main Scripts
 
-```console
-LLM_BASE_URL=http://127.0.0.1:11434/v1 \
-LLM_MODEL=your-local-model \
-npm run auto-short:plan -- --input "src/make bank.mp4" --llmMode openai
-```
+- `scripts/generate-word-match-forms.js`
+- `scripts/extract-clips.js`
+- `scripts/build-word-candidates-db.js`
+- `scripts/rerank-word-candidates-ollama.js`
+- `scripts/word-pipeline.js`
+- `scripts/make-vertical-shorts-clean.js`
+- `scripts/word-curate.js`
 
-### Optional: Decorative image assets
+## Remotion Status
 
-Drop PNG/JPG/WebP assets in `public/auto-short/assets`.  
-The cutaway pages will auto-use them as floating visuals.
+Remotion is intentionally still present for the separate auto-short workflow.
 
-**Upgrade Remotion**
+Relevant files:
+- `src/Root.tsx`
+- `src/auto-short/*`
+- `scripts/generate-auto-short-plan.js`
 
-```console
-npx remotion upgrade
-```
-
-## Docs
-
-Get started with Remotion by reading the [fundamentals page](https://www.remotion.dev/docs/the-fundamentals).
-
-## Help
-
-We provide help on our [Discord server](https://discord.gg/6VzzNDwUwV).
-
-## Issues
-
-Found an issue with Remotion? [File an issue here](https://github.com/remotion-dev/remotion/issues/new).
-
-## License
-
-Note that for some entities a company license is needed. [Read the terms here](https://github.com/remotion-dev/remotion/blob/main/LICENSE.md).
+That path is secondary for now. The anime word pipeline above is the current focus.

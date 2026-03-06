@@ -64,7 +64,7 @@
     "word:pick": "node scripts/word-curate.js pick",
     "word:board": "node tools/word-curation-ui/server.js",
     "word:board:av": "UI_AV_EVAL=1 UI_AV_WHISPER_MODEL=medium UI_AV_WHISPER_LANGUAGE=Japanese UI_AV_VISION_MODEL=qwen3-vl:8b node tools/word-curation-ui/server.js",
-    "shorts:av:one": "node scripts/make-vertical-shorts-clean.js --subsDir source_content/shingeki_no_kyojin/subs/japanese --enSubsDir source_content/shingeki_no_kyojin/subs/english_embedded --videosDir source_content/shingeki_no_kyojin/videos --wordList source_content/all_anime_top_2000.match.first2000.json --outDir out/shorts_work --outputDir out/shorts --rank --avEval --avWhisperModel medium --avWhisperLanguage Japanese --avVisionModel qwen3-vl:8b",
+    "shorts:av:one": "node scripts/make-vertical-shorts-clean.js --subsDir source_content/shingeki_no_kyojin/subs/japanese --enSubsDir source_content/shingeki_no_kyojin/subs/english_embedded --videosDir source_content/shingeki_no_kyojin/videos --wordList source_content/all_anime_top_2000.match.first2000.json --outDir out/shorts_work --outputDir out/shorts --rank --avEval --avWhisperModel medium --avWhisperLanguage Japanese --avVisionModel qwen3-vl:8b --noQr --noEndCard",
     "ui:soak": "node scripts/ui-soak-test.js",
     "wp:one": "node scripts/word-pipeline.js full --fast --topK 5 --allowWeak --force --outBase out/shorts --word",
     "wp:rank:10": "node scripts/word-pipeline.js rank --range 1-10 --fast --allowWeak --outBase out/shorts",
@@ -96,7 +96,11 @@
     "batch-extract:aot": "node scripts/batch-extract.js --count 2000 --wordsFile source_content/all_anime_top_2000.match.first2000.json --subsDir source_content/shingeki_no_kyojin/subs/japanese --videosDir source_content/shingeki_no_kyojin/videos --limit 5 --concat --flatOut --concatOnly --extra --rank",
     "shorts-clean:aot": "node scripts/make-vertical-shorts-clean.js --subsDir source_content/shingeki_no_kyojin/subs/japanese --enSubsDir source_content/shingeki_no_kyojin/subs/english_embedded --videosDir source_content/shingeki_no_kyojin/videos --outDir out/shorts_work --outputDir out/shorts --wordList source_content/all_anime_top_2000.match.first2000.json --rank",
     "shorts-render:aot": "node scripts/make-vertical-shorts.js --inputDir out/clips --outputDir out/shorts --wordList source_content/all_anime_top_2000.match.first2000.json",
-    "shorts-all:aot": "npm run batch-extract:aot && npm run shorts-render:aot"
+    "shorts-all:aot": "npm run batch-extract:aot && npm run shorts-render:aot",
+    "manual-clip": "node scripts/make-manual-clip.js",
+    "manual-clip:list": "node scripts/make-manual-clip.js --listVideos",
+    "range-short:one": "node scripts/make-manual-clip.js",
+    "range-short:list": "node scripts/make-manual-clip.js --listVideos"
   },
   "sideEffects": [
     "*.css"

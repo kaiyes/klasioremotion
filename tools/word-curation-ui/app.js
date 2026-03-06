@@ -18,6 +18,8 @@ const API = {
   deleteWord: "/api/words/delete",
   updateMeaning: "/api/words/update-meaning",
   cutClips: "/api/jobs/cut-clips",
+  videos: "/api/videos",
+  manualClip: "/api/manual-clip",
 };
 
 const TOP_K = 5;
@@ -37,11 +39,14 @@ const state = {
   currentJobId: null,
   currentJob: null,
   queueMeta: null,
+  availableVideos: [],
+  manualClipHistory: [],
 };
 
 const el = {
   refreshBtn: document.getElementById("refreshBtn"),
   renderSelectedBtn: document.getElementById("renderSelectedBtn"),
+  manualClipBtn: document.getElementById("manualClipBtn"),
   statusMsg: document.getElementById("statusMsg"),
   queueMeta: document.getElementById("queueMeta"),
 
@@ -89,6 +94,16 @@ const el = {
 
   jobMeta: document.getElementById("jobMeta"),
   jobLog: document.getElementById("jobLog"),
+
+  manualClipPanel: document.getElementById("manualClipPanel"),
+  closeManualClipBtn: document.getElementById("closeManualClipBtn"),
+  loadVideosBtn: document.getElementById("loadVideosBtn"),
+  videoSelect: document.getElementById("videoSelect"),
+  manualClipStartInput: document.getElementById("manualClipStartInput"),
+  manualClipEndInput: document.getElementById("manualClipEndInput"),
+  manualClipOutputInput: document.getElementById("manualClipOutputInput"),
+  createManualClipBtn: document.getElementById("createManualClipBtn"),
+  manualClipHistory: document.getElementById("manualClipHistory"),
 };
 
 function setStatus(msg, isError = false) {
@@ -141,7 +156,9 @@ function clampInt(n, min, max) {
 }
 
 function wordsSortedByIndex() {
-  return state.words.slice().sort((a, b) => Number(a.idx || 0) - Number(b.idx || 0));
+  return state.words
+    .slice()
+    .sort((a, b) => Number(a.idx || 0) - Number(b.idx || 0));
 }
 
 function wordsInIndexRange(startIdx, endIdx) {
@@ -248,13 +265,17 @@ function renderWordList() {
 
 function clipMetaText(c) {
   if (!c) return "candidate metadata unavailable";
-  return `${c.episode || ""} ${c.clipStart || ""}-${c.clipEnd || ""}`.trim() || "candidate metadata unavailable";
+  return (
+    `${c.episode || ""} ${c.clipStart || ""}-${c.clipEnd || ""}`.trim() ||
+    "candidate metadata unavailable"
+  );
 }
 
 function slotReasonWithTags(slot) {
-  const tagText = Array.isArray(slot?.badTags) && slot.badTags.length > 0
-    ? slot.badTags.map((x) => `bad:${x}`).join(",")
-    : "";
+  const tagText =
+    Array.isArray(slot?.badTags) && slot.badTags.length > 0
+      ? slot.badTags.map((x) => `bad:${x}`).join(",")
+      : "";
   const reason = String(slot?.reason || "").trim();
   if (reason && tagText) return `${reason} | ${tagText}`;
   return reason || tagText;
@@ -292,7 +313,9 @@ function reviewRowKey(word, family = "") {
 
 function uniqueRowPicks(row) {
   const map = row?.candidateMap instanceof Map ? row.candidateMap : null;
-  const values = uniquePositiveInts((row?.slots || []).map((s) => Number(s?.candidateIndex || 0)));
+  const values = uniquePositiveInts(
+    (row?.slots || []).map((s) => Number(s?.candidateIndex || 0)),
+  );
   const valid = values.filter((n) => {
     if (map) return map.has(n);
     const max = Number(row?.candidateMax || 0);
@@ -303,13 +326,16 @@ function uniqueRowPicks(row) {
 
 function nextReviewRowPicks(row, previousPicks = []) {
   const map = row?.candidateMap instanceof Map ? row.candidateMap : null;
-  const indexes = uniquePositiveInts(Array.from(map ? map.keys() : []))
-    .sort((a, b) => a - b);
+  const indexes = uniquePositiveInts(Array.from(map ? map.keys() : [])).sort(
+    (a, b) => a - b,
+  );
   if (indexes.length === 0) return [];
   const need = Math.max(1, Math.min(TOP_K, indexes.length));
   if (indexes.length <= need) return indexes.slice(0, need);
 
-  const prev = uniquePositiveInts(previousPicks).filter((n) => indexes.includes(n));
+  const prev = uniquePositiveInts(previousPicks).filter((n) =>
+    indexes.includes(n),
+  );
   const anchor = prev[0];
   const basePos = anchor ? indexes.indexOf(anchor) : -1;
   let pos = basePos >= 0 ? (basePos + 1) % indexes.length : 0;
@@ -360,28 +386,34 @@ function normalizeFamilyForms(forms, word) {
   return out.slice(0, 80);
 }
 
-function buildReviewRows(baseRows, details, familyPref = new Map(), clipReadyPref = {}) {
+function buildReviewRows(
+  baseRows,
+  details,
+  familyPref = new Map(),
+  clipReadyPref = {},
+) {
   return baseRows.map((r, i) => {
     const d = details[i] || {};
     const map = candidateMapFromDetail(d);
     const mapIndexes = uniquePositiveInts(Array.from(map.keys()));
-    const forms = normalizeFamilyForms(d?.meta?.matchForms || r.matchForms || [], r.word);
+    const forms = normalizeFamilyForms(
+      d?.meta?.matchForms || r.matchForms || [],
+      r.word,
+    );
     const savedFamily = String(familyPref.get(r.word) || "").trim();
     const family = forms.includes(savedFamily) ? savedFamily : "";
     const familyMode = Boolean(family);
     const picks = familyMode
       ? mapIndexes.slice(0, TOP_K)
-      : fillToTopK(Array.isArray(d.picks) ? d.picks : r.picks || [], mapIndexes);
+      : fillToTopK(
+          Array.isArray(d.picks) ? d.picks : r.picks || [],
+          mapIndexes,
+        );
     const dbLen = Array.isArray(d?.db?.candidates) ? d.db.candidates.length : 0;
     const liveLen = Array.isArray(d?.livePool) ? d.livePool.length : 0;
     const candMax = familyMode
       ? Math.max(...mapIndexes, 0)
-      : Math.max(
-          dbLen,
-          liveLen,
-          ...picks.map((x) => Number(x) || 0),
-          1,
-        );
+      : Math.max(dbLen, liveLen, ...picks.map((x) => Number(x) || 0), 1);
     const key = reviewRowKey(r.word, family);
     const clipsReady =
       Boolean(clipReadyPref[key]) || Boolean(d?.candidateStats?.clipsReady);
@@ -400,7 +432,10 @@ function buildReviewRows(baseRows, details, familyPref = new Map(), clipReadyPre
       candidateStats: {
         effectiveCount: numOr(d?.candidateStats?.effectiveCount, candMax),
         livePoolCount: numOr(d?.candidateStats?.livePoolCount, liveLen || 0),
-        dbCandidateCount: numOr(d?.candidateStats?.dbCandidateCount, dbLen || 0),
+        dbCandidateCount: numOr(
+          d?.candidateStats?.dbCandidateCount,
+          dbLen || 0,
+        ),
         rerankCandidateCount: numOr(d?.candidateStats?.rerankCandidateCount, 0),
         clipsReady,
         source: String(d?.candidateStats?.source || ""),
@@ -427,7 +462,9 @@ function renderReviewSlotCard(row, slot) {
   wrap.className = "review-slot";
 
   const c = row.candidateMap.get(Number(slot.candidateIndex)) || null;
-  const headText = String(c?.matchText || c?.jpText || "").trim().slice(0, 42);
+  const headText = String(c?.matchText || c?.jpText || "")
+    .trim()
+    .slice(0, 42);
   const clipsReady = Boolean(row?.candidateStats?.clipsReady);
   wrap.innerHTML = `
     <div class="review-slot-head">
@@ -458,7 +495,13 @@ function renderReviewSlotCard(row, slot) {
   const video = wrap.querySelector("video");
   const hint = wrap.querySelector(".slot-preview-hint");
   if (clipsReady) {
-    applySlotPreview(video, hint, row.word, Number(slot.candidateIndex) || slot.slot, row.family);
+    applySlotPreview(
+      video,
+      hint,
+      row.word,
+      Number(slot.candidateIndex) || slot.slot,
+      row.family,
+    );
   } else {
     hint.textContent = "text-only (click Cut Clips)";
   }
@@ -477,13 +520,13 @@ function renderReviewSlotCard(row, slot) {
     slot.locked = lockCb.checked;
   });
 
-  const slotPrePadInput = wrap.querySelector('input[data-slot-prepad]');
+  const slotPrePadInput = wrap.querySelector("input[data-slot-prepad]");
   if (slotPrePadInput) {
     slotPrePadInput.addEventListener("input", () => {
       slot.prePadMs = slotPrePadInput.value;
     });
   }
-  const slotPostPadInput = wrap.querySelector('input[data-slot-postpad]');
+  const slotPostPadInput = wrap.querySelector("input[data-slot-postpad]");
   if (slotPostPadInput) {
     slotPostPadInput.addEventListener("input", () => {
       slot.postPadMs = slotPostPadInput.value;
@@ -500,7 +543,10 @@ function renderReviewSlotCard(row, slot) {
     metaEl.textContent = clipMetaText(nextMeta);
     const nextHead = wrap.querySelector(".review-slot-headtext");
     if (nextHead) {
-      nextHead.textContent = String(nextMeta?.matchText || nextMeta?.jpText || "").trim().slice(0, 42) || "-";
+      nextHead.textContent =
+        String(nextMeta?.matchText || nextMeta?.jpText || "")
+          .trim()
+          .slice(0, 42) || "-";
     }
     if (Boolean(row?.candidateStats?.clipsReady)) {
       applySlotPreview(video, hint, row.word, n, row.family);
@@ -568,7 +614,10 @@ async function reloadReviewRowForFamily(row) {
   const familyMode = Boolean(family);
   const picks = familyMode
     ? mapIndexes.slice(0, TOP_K)
-    : fillToTopK(Array.isArray(d.picks) ? d.picks : row.basePicks || [], mapIndexes);
+    : fillToTopK(
+        Array.isArray(d.picks) ? d.picks : row.basePicks || [],
+        mapIndexes,
+      );
   row.candidateMap = map;
   const dbLen = Array.isArray(d?.db?.candidates) ? d.db.candidates.length : 0;
   const liveLen = Array.isArray(d?.livePool) ? d.livePool.length : 0;
@@ -577,7 +626,8 @@ async function reloadReviewRowForFamily(row) {
     : Math.max(dbLen, liveLen, ...picks.map((x) => Number(x) || 0), 1);
   const key = reviewRowKey(row.word, family);
   const clipsReady =
-    Boolean(state.reviewClipReady[key]) || Boolean(d?.candidateStats?.clipsReady);
+    Boolean(state.reviewClipReady[key]) ||
+    Boolean(d?.candidateStats?.clipsReady);
   row.candidateStats = {
     effectiveCount: numOr(d?.candidateStats?.effectiveCount, row.candidateMax),
     livePoolCount: numOr(d?.candidateStats?.livePoolCount, liveLen || 0),
@@ -609,7 +659,11 @@ async function saveRowMeaningIfNeeded(row) {
   const prevMeaning = String(row?.meaning || "").trim();
   if (nextMeaning === prevMeaning) return false;
 
-  await postJson(API.updateMeaning, { word: row.word, family, meaning: nextMeaning });
+  await postJson(API.updateMeaning, {
+    word: row.word,
+    family,
+    meaning: nextMeaning,
+  });
   row.meaning = nextMeaning;
 
   return true;
@@ -624,8 +678,10 @@ function rowMeaningForRender(row) {
 function rowPadMsForRender(row) {
   const preRaw = String(row?.prePadMs ?? "").trim();
   const postRaw = String(row?.postPadMs ?? "").trim();
-  const pre = preRaw === "" ? null : Math.max(0, Math.trunc(Number(preRaw) || 0));
-  const post = postRaw === "" ? null : Math.max(0, Math.trunc(Number(postRaw) || 0));
+  const pre =
+    preRaw === "" ? null : Math.max(0, Math.trunc(Number(preRaw) || 0));
+  const post =
+    postRaw === "" ? null : Math.max(0, Math.trunc(Number(postRaw) || 0));
   return { prePadMs: pre, postPadMs: post };
 }
 
@@ -641,8 +697,10 @@ function rowSlotPadsForRender(row, picks) {
     if (preRaw === "" && postRaw === "") continue;
     out.push({
       candidateIndex: idx,
-      prePadMs: preRaw === "" ? null : Math.max(0, Math.trunc(Number(preRaw) || 0)),
-      postPadMs: postRaw === "" ? null : Math.max(0, Math.trunc(Number(postRaw) || 0)),
+      prePadMs:
+        preRaw === "" ? null : Math.max(0, Math.trunc(Number(preRaw) || 0)),
+      postPadMs:
+        postRaw === "" ? null : Math.max(0, Math.trunc(Number(postRaw) || 0)),
     });
   }
   return out;
@@ -653,7 +711,8 @@ function renderReviewGrid() {
   el.reviewGrid.innerHTML = "";
 
   if (rows.length === 0) {
-    el.reviewMeta.textContent = "Load 5-10 words. You will see all 5 clip picks for each word.";
+    el.reviewMeta.textContent =
+      "Load 5-10 words. You will see all 5 clip picks for each word.";
     return;
   }
 
@@ -697,12 +756,18 @@ function renderReviewGrid() {
     familyBtn.textContent = "Load Family";
     familyBtn.addEventListener("click", async () => {
       row.family = String(familySelect.value || "").trim();
-      setStatus(`Loading ${row.word}${row.family ? ` family=${row.family}` : ""}...`);
+      setStatus(
+        `Loading ${row.word}${row.family ? ` family=${row.family}` : ""}...`,
+      );
       try {
         await reloadReviewRowForFamily(row);
         renderReviewGrid();
-        const n = Number(row?.candidateStats?.effectiveCount || row?.candidateMax || 0);
-        const clips = Boolean(row?.candidateStats?.clipsReady) ? "ready" : "not-cut";
+        const n = Number(
+          row?.candidateStats?.effectiveCount || row?.candidateMax || 0,
+        );
+        const clips = Boolean(row?.candidateStats?.clipsReady)
+          ? "ready"
+          : "not-cut";
         setStatus(
           `Loaded ${row.word}${row.family ? ` family=${row.family}` : ""} (candidates=${n}, clips=${clips}).`,
         );
@@ -731,12 +796,18 @@ function renderReviewGrid() {
     const saveMeaningBtn = document.createElement("button");
     saveMeaningBtn.className = "btn btn-small";
     const familyMode = Boolean(String(row.family || "").trim());
-    saveMeaningBtn.textContent = familyMode ? "Save Family Meaning" : "Family Meaning (Select Family)";
+    saveMeaningBtn.textContent = familyMode
+      ? "Save Family Meaning"
+      : "Family Meaning (Select Family)";
     saveMeaningBtn.disabled = !familyMode;
     saveMeaningBtn.addEventListener("click", async () => {
       try {
         const changed = await saveRowMeaningIfNeeded(row);
-        setStatus(changed ? `Saved family meaning for ${row.word} (${row.family}).` : `Meaning unchanged for ${row.word}.`);
+        setStatus(
+          changed
+            ? `Saved family meaning for ${row.word} (${row.family}).`
+            : `Meaning unchanged for ${row.word}.`,
+        );
         renderReviewGrid();
       } catch (err) {
         setStatus(err?.message || String(err), true);
@@ -775,12 +846,19 @@ function renderReviewGrid() {
     const slotGrid = card.querySelector(".review-slot-grid");
     const familyModeSlots = Boolean(String(row.family || "").trim());
     const slotLimit = familyModeSlots
-      ? Math.max(0, Math.min(TOP_K, numOr(row?.candidateStats?.effectiveCount, row?.slots?.length || 0)))
+      ? Math.max(
+          0,
+          Math.min(
+            TOP_K,
+            numOr(row?.candidateStats?.effectiveCount, row?.slots?.length || 0),
+          ),
+        )
       : TOP_K;
     if (familyModeSlots && slotLimit === 0) {
       const none = document.createElement("div");
       none.className = "muted";
-      none.textContent = "No candidates found for this family form in subtitle text.";
+      none.textContent =
+        "No candidates found for this family form in subtitle text.";
       slotGrid.appendChild(none);
     }
     for (let i = 0; i < slotLimit; i++) {
@@ -843,14 +921,20 @@ function renderReviewGrid() {
     cutClipsBtn.className = "btn btn-small";
     cutClipsBtn.textContent = "Cut Clips";
     cutClipsBtn.addEventListener("click", async () => {
-      const picks = uniquePositiveInts((row.slots || []).map((s) => Number(s.candidateIndex)));
+      const picks = uniquePositiveInts(
+        (row.slots || []).map((s) => Number(s.candidateIndex)),
+      );
       if (picks.length === 0) {
         setStatus(`No candidate picks to cut for ${row.word}.`, true);
         return;
       }
       await enqueueAndPoll(
         API.cutClips,
-        { word: row.word, family: row.family || "", picks: picks.slice(0, TOP_K) },
+        {
+          word: row.word,
+          family: row.family || "",
+          picks: picks.slice(0, TOP_K),
+        },
         `Queued cut clips ${row.word}${row.family ? ` family=${row.family}` : ""}`,
       );
       state.reviewClipReady[reviewRowKey(row.word, row.family || "")] = true;
@@ -963,9 +1047,16 @@ async function loadReviewRange() {
     );
     const clipReadyPref = { ...(state.reviewClipReady || {}) };
     const details = await Promise.all(
-      baseRows.map((r) => getJson(API.word(r.word, String(familyPref.get(r.word) || "").trim()))),
+      baseRows.map((r) =>
+        getJson(API.word(r.word, String(familyPref.get(r.word) || "").trim())),
+      ),
     );
-    state.reviewRows = buildReviewRows(baseRows, details, familyPref, clipReadyPref);
+    state.reviewRows = buildReviewRows(
+      baseRows,
+      details,
+      familyPref,
+      clipReadyPref,
+    );
     renderReviewGrid();
     setStatus(`Loaded review range #${start}-${end}.`);
   } catch (err) {
@@ -1031,14 +1122,19 @@ function appendReasonTag(reasonText, tag) {
 function getRenderPicksFromDraft() {
   const selected = getSelectedSlotIndexes0().sort((a, b) => a - b);
   if (selected.length === 0) {
-    return { picks: fillToTopK(state.draftPicks), usingSelectedSlots: false, selectedCount: 0 };
+    return {
+      picks: fillToTopK(state.draftPicks),
+      usingSelectedSlots: false,
+      selectedCount: 0,
+    };
   }
   if (selected.length < 3) {
     return {
       picks: [],
       usingSelectedSlots: true,
       selectedCount: selected.length,
-      error: "Select 3-5 slots to render selected clips, or clear slot selection to render all 5.",
+      error:
+        "Select 3-5 slots to render selected clips, or clear slot selection to render all 5.",
     };
   }
 
@@ -1055,7 +1151,8 @@ function getRenderPicksFromDraft() {
       picks: [],
       usingSelectedSlots: true,
       selectedCount: selected.length,
-      error: "Selected slots map to fewer than 3 unique clips. Pick different slots/candidates.",
+      error:
+        "Selected slots map to fewer than 3 unique clips. Pick different slots/candidates.",
     };
   }
 
@@ -1112,7 +1209,8 @@ function renderCommands() {
       .join(" ");
     el.replaceCmd.textContent = replaceCmd;
   } else {
-    el.replaceCmd.textContent = "(single replace command available only when exactly one slot changed)";
+    el.replaceCmd.textContent =
+      "(single replace command available only when exactly one slot changed)";
   }
 }
 
@@ -1130,11 +1228,12 @@ function candidateMapFromDetail(detail) {
   const map = new Map();
   const familyMode = Boolean(String(detail?.family || "").trim());
   if (familyMode) {
-    const pool = Array.isArray(detail?.textPool) && detail.textPool.length > 0
-      ? detail.textPool
-      : Array.isArray(detail?.livePool)
-        ? detail.livePool
-        : [];
+    const pool =
+      Array.isArray(detail?.textPool) && detail.textPool.length > 0
+        ? detail.textPool
+        : Array.isArray(detail?.livePool)
+          ? detail.livePool
+          : [];
     pool.forEach((c, i) => {
       map.set(i + 1, { ...c, candidateIndex: i + 1 });
     });
@@ -1150,9 +1249,7 @@ function candidateMapFromDetail(detail) {
     map.set(i + 1, { ...c, candidateIndex: i + 1 });
   });
 
-  for (const t of Array.isArray(detail?.rerank?.top)
-    ? detail.rerank.top
-    : []) {
+  for (const t of Array.isArray(detail?.rerank?.top) ? detail.rerank.top : []) {
     const idx = Number(t?.candidateIndex);
     if (!Number.isInteger(idx) || idx <= 0 || map.has(idx)) continue;
     map.set(idx, {
@@ -1394,7 +1491,9 @@ function renderCandidates() {
 
     for (const b of card.querySelectorAll("button[data-use-next]")) {
       b.addEventListener("click", () => {
-        let slot = state.draftPicks.findIndex((x) => !Number.isInteger(Number(x)));
+        let slot = state.draftPicks.findIndex(
+          (x) => !Number.isInteger(Number(x)),
+        );
         if (slot < 0) slot = 0;
         state.draftPicks[slot] = idx;
         state.draftPicks = fillToTopK(state.draftPicks);
@@ -1409,7 +1508,9 @@ function renderCandidates() {
 }
 
 function renderNotes() {
-  const notes = Array.isArray(state.wordDetail?.notes) ? state.wordDetail.notes : [];
+  const notes = Array.isArray(state.wordDetail?.notes)
+    ? state.wordDetail.notes
+    : [];
   el.notesList.innerHTML = "";
   if (notes.length === 0) {
     el.notesList.innerHTML = `<div class="muted">No history yet.</div>`;
@@ -1470,7 +1571,10 @@ async function loadWords() {
     state.selectedWord = state.words[0].word;
   }
 
-  if (state.selectedWord && !state.words.some((x) => x.word === state.selectedWord)) {
+  if (
+    state.selectedWord &&
+    !state.words.some((x) => x.word === state.selectedWord)
+  ) {
     state.selectedWord = state.words[0]?.word || null;
   }
 }
@@ -1672,7 +1776,11 @@ function bindEvents() {
         setStatus("Select at least one word.", true);
         return;
       }
-      await enqueueAndPoll(API.renderMany, { words }, `Queued render-many (${words.length})`);
+      await enqueueAndPoll(
+        API.renderMany,
+        { words },
+        `Queued render-many (${words.length})`,
+      );
     });
   }
 
@@ -1771,7 +1879,114 @@ function bindEvents() {
     const c = changed[0];
     const spec = `${c.slot}=${c.to}`;
     const reason = reasonForSlot(c.slot) || combinedReasons();
-    await enqueueAndPoll(API.replace, { word, spec, reason }, `Queued replace ${word} ${spec}`);
+    await enqueueAndPoll(
+      API.replace,
+      { word, spec, reason },
+      `Queued replace ${word} ${spec}`,
+    );
+  });
+
+  el.manualClipBtn?.addEventListener("click", () => {
+    window.location.href = "/range-short.html";
+  });
+
+  el.closeManualClipBtn?.addEventListener("click", () => {
+    el.manualClipPanel.hidden = true;
+    el.wordPanel.hidden = !state.selectedWord;
+    el.emptyState.hidden = !!state.selectedWord;
+  });
+
+  el.loadVideosBtn?.addEventListener("click", async () => {
+    await loadVideos();
+  });
+
+  el.createManualClipBtn?.addEventListener("click", async () => {
+    const videoFile = el.videoSelect.value;
+    const startTime = el.manualClipStartInput.value.trim();
+    const endTime = el.manualClipEndInput.value.trim();
+    const outputDir = el.manualClipOutputInput.value.trim();
+
+    if (!videoFile) {
+      setStatus("Please select a video file.", true);
+      return;
+    }
+    if (!startTime) {
+      setStatus("Please enter a start time.", true);
+      return;
+    }
+    if (!endTime) {
+      setStatus("Please enter an end time.", true);
+      return;
+    }
+
+    try {
+      await enqueueAndPoll(
+        API.manualClip,
+        { videoFile, startTime, endTime, outputDir },
+        `Creating range short: ${videoFile} (${startTime} - ${endTime})`,
+      );
+      const outputFile = String(state.currentJob?.payload?.outputFile || "").trim();
+      state.manualClipHistory.unshift({
+        videoFile,
+        startTime,
+        endTime,
+        outputDir,
+        outputFile,
+        timestamp: new Date().toISOString(),
+      });
+      renderManualClipHistory();
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+  });
+}
+
+async function loadVideos() {
+  try {
+    el.loadVideosBtn.disabled = true;
+    el.loadVideosBtn.textContent = "Loading...";
+    const data = await getJson(API.videos);
+    state.availableVideos = data.videos || [];
+    renderVideoSelect();
+  } catch (err) {
+    setStatus(`Failed to load videos: ${err.message}`, true);
+  } finally {
+    el.loadVideosBtn.disabled = false;
+    el.loadVideosBtn.textContent = "Load Videos";
+  }
+}
+
+function renderVideoSelect() {
+  el.videoSelect.innerHTML = '<option value="">Select a video...</option>';
+  state.availableVideos.forEach((video) => {
+    const opt = document.createElement("option");
+    opt.value = video;
+    opt.textContent = video;
+    el.videoSelect.appendChild(opt);
+  });
+}
+
+function renderManualClipHistory() {
+  el.manualClipHistory.innerHTML = "";
+  if (state.manualClipHistory.length === 0) {
+    el.manualClipHistory.innerHTML =
+      '<p class="muted">No clips created yet.</p>';
+    return;
+  }
+  state.manualClipHistory.slice(0, 10).forEach((clip) => {
+    const div = document.createElement("div");
+    div.className = "note";
+    const time = new Date(clip.timestamp).toLocaleTimeString();
+    const url = clip.outputFile
+      ? `/${String(clip.outputFile).replaceAll("\\\\", "/").replace(/^\/+/, "")}`
+      : "";
+    div.innerHTML = `
+      <strong>${clip.videoFile}</strong><br>
+      ${clip.startTime} - ${clip.endTime}<br>
+      ${clip.outputFile ? `<a href=\"${escapeHtml(url)}\" target=\"_blank\" rel=\"noopener noreferrer\">Open output</a><br>` : ""}
+      <span class="muted">${time}</span>
+    `;
+    el.manualClipHistory.appendChild(div);
   });
 }
 

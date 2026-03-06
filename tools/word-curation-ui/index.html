@@ -11,9 +11,12 @@
       <div>
         <p class="eyebrow">Anime Shorts</p>
         <h1>Word Curation Board</h1>
-        <p class="subtitle">Select words, render shorts, swap clips, add reasons.</p>
+        <p class="subtitle">
+          Select words, render shorts, swap clips, add reasons.
+        </p>
       </div>
       <div class="top-actions">
+        <button id="manualClipBtn" class="btn btn-small">Range Short</button>
         <button id="refreshBtn" class="btn">Refresh</button>
       </div>
     </header>
@@ -40,19 +43,37 @@
         </div>
         <div class="sidebar-mini">
           <span id="wordCount" class="muted"></span>
-          <button id="selectVisibleBtn" class="btn btn-small">Select Visible</button>
+          <button id="selectVisibleBtn" class="btn btn-small">
+            Select Visible
+          </button>
           <button id="clearSelectionBtn" class="btn btn-small">Clear</button>
         </div>
         <section class="range-box">
           <p class="muted">Range render</p>
           <div class="range-row">
-            <input id="rangeStartInput" type="number" min="1" step="1" value="20" />
+            <input
+              id="rangeStartInput"
+              type="number"
+              min="1"
+              step="1"
+              value="20"
+            />
             <span class="muted">to</span>
-            <input id="rangeEndInput" type="number" min="1" step="1" value="30" />
+            <input
+              id="rangeEndInput"
+              type="number"
+              min="1"
+              step="1"
+              value="30"
+            />
           </div>
-          <button id="renderRangeBtn" class="btn btn-small btn-primary">Render Range</button>
+          <button id="renderRangeBtn" class="btn btn-small btn-primary">
+            Render Range
+          </button>
         </section>
-        <p class="muted">Check a word to open it, then use “Render Current Slots”.</p>
+        <p class="muted">
+          Check a word to open it, then use "Render Current Slots".
+        </p>
         <ul id="wordList" class="word-list"></ul>
       </aside>
 
@@ -61,10 +82,18 @@
           <div class="card-head">
             <h3>Range Review</h3>
             <div class="inline">
-              <label class="inline">start
-                <input id="reviewStartInput" type="number" min="1" step="1" value="20" />
+              <label class="inline"
+                >start
+                <input
+                  id="reviewStartInput"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value="20"
+                />
               </label>
-              <label class="inline">count
+              <label class="inline"
+                >count
                 <select id="reviewCountSelect">
                   <option value="5">5</option>
                   <option value="10" selected>10</option>
@@ -73,11 +102,15 @@
               <button id="loadReviewBtn" class="btn btn-small">Load</button>
             </div>
           </div>
-          <div id="reviewMeta" class="muted">Load 5-10 words to audit all 5 clips per word.</div>
+          <div id="reviewMeta" class="muted">
+            Load 5-10 words to audit all 5 clips per word.
+          </div>
           <div id="reviewGrid" class="review-grid"></div>
         </section>
 
-        <div id="emptyState" class="card empty-state">Select one word to curate.</div>
+        <div id="emptyState" class="card empty-state">
+          Select one word to curate.
+        </div>
 
         <div id="wordPanel" class="word-panel" hidden>
           <section class="card">
@@ -87,10 +120,16 @@
                 <p id="wordMeta" class="muted"></p>
               </div>
               <div class="word-actions">
-                <button id="regenWordBtn" class="btn">Regenerate Candidates</button>
-                <button id="renderWordBtn" class="btn">Render Current Slots</button>
+                <button id="regenWordBtn" class="btn">
+                  Regenerate Candidates
+                </button>
+                <button id="renderWordBtn" class="btn">
+                  Render Current Slots
+                </button>
                 <button id="openOutputBtn" class="btn">Open Output</button>
-                <button id="deleteWordBtn" class="btn btn-danger">Delete Word</button>
+                <button id="deleteWordBtn" class="btn btn-danger">
+                  Delete Word
+                </button>
               </div>
             </div>
           </section>
@@ -98,18 +137,31 @@
           <section class="card">
             <h3>Final Picks (5 clips)</h3>
             <div class="slot-selection-toolbar">
-              <span id="slotSelectionInfo" class="muted">No slots selected</span>
+              <span id="slotSelectionInfo" class="muted"
+                >No slots selected</span
+              >
               <div class="slot-selection-actions">
-                <button id="selectAllSlotsBtn" class="btn btn-small">Select All Slots</button>
-                <button id="clearSlotSelectionBtn" class="btn btn-small">Clear Slot Selection</button>
+                <button id="selectAllSlotsBtn" class="btn btn-small">
+                  Select All Slots
+                </button>
+                <button id="clearSlotSelectionBtn" class="btn btn-small">
+                  Clear Slot Selection
+                </button>
               </div>
             </div>
             <div id="slotRow" class="slot-row"></div>
-            <p class="muted">Check slot boxes, then click a candidate card to apply. Render uses selected slots (3-5), or all 5 if none selected.</p>
+            <p class="muted">
+              Check slot boxes, then click a candidate card to apply. Render
+              uses selected slots (3-5), or all 5 if none selected.
+            </p>
             <div class="toolbar">
               <button id="resetPicksBtn" class="btn">Reset Picks</button>
-              <button id="applyPickBtn" class="btn btn-primary">Apply Picks + Stitch</button>
-              <button id="applyReplaceBtn" class="btn">Apply Single Replace</button>
+              <button id="applyPickBtn" class="btn btn-primary">
+                Apply Picks + Stitch
+              </button>
+              <button id="applyReplaceBtn" class="btn">
+                Apply Single Replace
+              </button>
             </div>
             <div class="command-box">
               <label>Pick command preview</label>
@@ -130,8 +182,16 @@
           <section class="card">
             <div class="card-head">
               <h3>Candidates</h3>
-              <label class="inline">show
-                <input id="candidateLimit" type="number" min="5" max="200" step="5" value="40" />
+              <label class="inline"
+                >show
+                <input
+                  id="candidateLimit"
+                  type="number"
+                  min="5"
+                  max="200"
+                  step="5"
+                  value="40"
+                />
               </label>
             </div>
             <div id="candidateGrid" class="candidate-grid"></div>
@@ -148,6 +208,78 @@
           <div id="jobMeta" class="muted"></div>
           <pre id="jobLog" class="job-log"></pre>
         </section>
+
+        <div id="manualClipPanel" class="word-panel" hidden>
+          <section class="card">
+            <div class="word-head">
+              <h2>Episode Range Short</h2>
+              <p class="muted">
+                Select a video and render a vertical short from A to B with JP
+                + furigana + romaji + EN overlays.
+              </p>
+              <button id="closeManualClipBtn" class="btn btn-small">
+                Close
+              </button>
+            </div>
+          </section>
+
+          <section class="card">
+            <h3>Video Selection</h3>
+            <button id="loadVideosBtn" class="btn btn-small">
+              Load Videos
+            </button>
+            <select id="videoSelect" class="full-width"></select>
+          </section>
+
+          <section class="card">
+            <h3>Time Range</h3>
+            <div class="range-row">
+              <label class="inline"
+                >Start (MM:SS or HH:MM:SS)
+                <input
+                  id="manualClipStartInput"
+                  type="text"
+                  placeholder="5:00"
+                  value="5:00"
+                />
+              </label>
+              <label class="inline"
+                >End (MM:SS or HH:MM:SS)
+                <input
+                  id="manualClipEndInput"
+                  type="text"
+                  placeholder="8:00"
+                  value="8:00"
+                />
+              </label>
+            </div>
+            <p class="muted">Maximum clip duration: 3 minutes (180s)</p>
+          </section>
+
+          <section class="card">
+            <h3>Output</h3>
+            <label class="inline"
+              >Output directory (optional)
+              <input
+                id="manualClipOutputInput"
+                type="text"
+                placeholder="out/range-shorts"
+                value="out/range-shorts"
+              />
+            </label>
+          </section>
+
+          <section class="card">
+            <button id="createManualClipBtn" class="btn btn-primary">
+              Create Range Short
+            </button>
+          </section>
+
+          <section class="card">
+            <h3>Recent Clips</h3>
+            <div id="manualClipHistory" class="notes-list"></div>
+          </section>
+        </div>
       </section>
     </main>
 

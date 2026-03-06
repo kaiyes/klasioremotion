@@ -56,6 +56,8 @@ function parseArgs(argv) {
     autoReplaceWithPick: false,
     wordPlacement: "anywhere", // anywhere | middle
     meaning: null,
+    reading: null,
+    romaji: null,
     familyMeaningsFile: DEFAULT_FAMILY_MEANINGS_FILE,
     avEval: false,
     avWhisperModel: String(process.env.AV_WHISPER_MODEL || "medium").trim(),
@@ -70,6 +72,9 @@ function parseArgs(argv) {
     mode: "line",
     tailRepeat: 1,
     brandQrUrl: "http://bundai.app/",
+    showQr: true,
+    appendEndCard: true,
+    saveVersionedCopy: false,
     cleanOutputs: true,
     verbose: false,
   };
@@ -207,6 +212,14 @@ function parseArgs(argv) {
         args.meaning = v;
         takeNext();
         break;
+      case "reading":
+        args.reading = v;
+        takeNext();
+        break;
+      case "romaji":
+        args.romaji = v;
+        takeNext();
+        break;
       case "avEval":
         args.avEval = true;
         break;
@@ -267,11 +280,20 @@ function parseArgs(argv) {
         args.brandQrUrl = v;
         takeNext();
         break;
+      case "noQr":
+        args.showQr = false;
+        break;
+      case "noEndCard":
+        args.appendEndCard = false;
+        break;
       case "cleanOutputs":
         args.cleanOutputs = true;
         break;
       case "keepOutputs":
         args.cleanOutputs = false;
+        break;
+      case "saveVersionedCopy":
+        args.saveVersionedCopy = true;
         break;
       case "verbose":
         args.verbose = true;
@@ -325,6 +347,8 @@ Options:
   --avMinVisionSim <n>       Min JP similarity vs vision OCR (default: 0.42)
   --avTimeoutMs <n>          Vision timeout per clip in ms (default: 45000)
   --meaning <text>           Override meaning shown on top card
+  --reading <text>           Override reading (hiragana) shown on top card
+  --romaji <text>            Override romaji shown on top card
   --familyMeaningsFile <f>   Saved family->meaning map (default: source_content/family-meanings.json)
   --prePadMs <n>             Passed to extractor (default: 1500)
   --postPadMs <n>            Passed to extractor (default: 1500)
@@ -332,6 +356,9 @@ Options:
   --longPolicy <skip|shrink> Passed to extractor (default: shrink)
   --tailRepeat <n>           End card repeat count (default: 1)
   --brandQrUrl <url>         Branding QR URL (default: http://bundai.app/)
+  --noQr                     Disable QR code on the branding block
+  --noEndCard                Disable appending source_content/card.mp4
+  --saveVersionedCopy        Save a timestamped duplicate next to the main output
   --keepOutputs              Keep old out dirs (default: clean on each run)
   --cleanOutputs             Force clean outputs before run
   --verbose                  Verbose logs
@@ -686,11 +713,12 @@ function buildSegmentOverlaySvg({
   const videoHeight = (width * 9) / 16;
   const videoBottom = videoTop + videoHeight;
 
-  const headerRectH = 430 * s;
+  const headerRectH = 470 * s;
   const headerRectY = Math.max(48 * s, videoTop - headerRectH - 116 * s);
   const labelY = headerRectY + 86 * s;
   const readingY = labelY + 82 * s;
-  const kanjiY = readingY + 134 * s;
+  const romajiY = readingY + 58 * s;
+  const kanjiY = romajiY + 110 * s;
   const meaningY = kanjiY + 96 * s;
 
   const subtitleTop = videoBottom + 26 * s;
@@ -802,6 +830,7 @@ function buildSegmentOverlaySvg({
   <rect x="${width * 0.05}" y="${headerRectY}" width="${width * 0.9}" height="${headerRectH}" rx="${24 * s}" ry="${24 * s}" fill="rgba(198,233,212,0.92)"/>
   <text x="50%" y="${labelY}" text-anchor="middle" font-family="${fontEN}" font-size="${42 * s}" font-weight="800" fill="#1e3a34">Anime word of the day</text>
   <text x="50%" y="${readingY}" text-anchor="middle" font-family="${fontJP}" font-size="${54 * s}" font-weight="700" fill="#1e3a34">${svgEscape(queryReading)}</text>
+  <text x="50%" y="${romajiY}" text-anchor="middle" font-family="${fontEN}" font-size="${32 * s}" font-weight="700" fill="#1e3a34">${svgEscape(queryRomaji)}</text>
   <text x="50%" y="${kanjiY}" text-anchor="middle" font-family="${fontJP}" font-size="${126 * s}" font-weight="800" fill="#ffd900" stroke="#000000" stroke-width="${4 * s}" paint-order="stroke fill">${svgEscape(query)}</text>
   <text x="50%" y="${meaningY}" text-anchor="middle" font-family="${fontEN}" font-size="${48 * s}" font-weight="800" fill="#1e3a34">${svgEscape(queryMeaning || "Japanese in context")}</text>
   ${brandBlock}
@@ -1012,6 +1041,7 @@ async function main() {
   if (args.autoReplaceWithPick) extractArgs.push("--autoReplaceWithPick");
   if (!args.autoReplaceBad) extractArgs.push("--noAutoReplaceBad");
   extractArgs.push("--wordPlacement", args.wordPlacement);
+  if (!args.appendEndCard) extractArgs.push("--noEndCard");
   if (args.avEval) extractArgs.push("--avEval");
   if (args.avWhisperModel) extractArgs.push("--avWhisperModel", args.avWhisperModel);
   if (args.avWhisperLanguage) extractArgs.push("--avWhisperLanguage", args.avWhisperLanguage);
@@ -1061,6 +1091,7 @@ async function main() {
 
   const isFamilyMode = Boolean(args.matchContains && args.matchContains !== args.query);
   const queryReading =
+    args.reading ||
     displayMeta.reading ||
     toHiragana(tokenizer.tokenize(displayWord).map((t) => t.reading || t.surface_form).join(""));
   const queryMeaning = normalizeMeaning(
@@ -1075,10 +1106,10 @@ async function main() {
       `No saved meaning for family "${args.matchContains}". Pass --meaning once to remember it.`,
     );
   }
-  const queryRomaji = toRomaji(queryReading);
+  const queryRomaji = args.romaji || toRomaji(queryReading);
   const highlightColor = "#ffd900";
   const logoDataUri = loadPngDataUri(path.resolve("source_content", "logo.png"));
-  const qrDataUri = await buildQrDataUri(args.brandQrUrl, 192);
+  const qrDataUri = args.showQr ? await buildQrDataUri(args.brandQrUrl, 192) : "";
 
   let t = 0;
   const overlays = [];
@@ -1173,36 +1204,40 @@ async function main() {
     verbose: args.verbose,
   });
 
-  const cardVideoPath = path.resolve("source_content", "card.mp4");
-  if (fs.existsSync(cardVideoPath)) {
-    const tailDurationSec = readDurationSec(cardVideoPath);
-    const tailRepeat = Math.max(1, Math.floor(Number(args.tailRepeat) || 1));
-    if (tailDurationSec > 0) {
-      const finalOut = outPath.replace(/\.mp4$/i, "_with_card.mp4");
-      runFfmpegAppendTailVideo({
-        mainInput: outPath,
-        tailInput: cardVideoPath,
-        output: finalOut,
-        width: args.width,
-        height: args.height,
-        tailDurationSec,
-        tailRepeat,
-        verbose: args.verbose,
-      });
-      fs.unlinkSync(outPath);
-      fs.renameSync(finalOut, outPath);
-      console.log(
-        `Appended video end card (source_content/card.mp4) x${tailRepeat} to: ${outPath}`,
-      );
+  if (args.appendEndCard) {
+    const cardVideoPath = path.resolve("source_content", "card.mp4");
+    if (fs.existsSync(cardVideoPath)) {
+      const tailDurationSec = readDurationSec(cardVideoPath);
+      const tailRepeat = Math.max(1, Math.floor(Number(args.tailRepeat) || 1));
+      if (tailDurationSec > 0) {
+        const finalOut = outPath.replace(/\.mp4$/i, "_with_card.mp4");
+        runFfmpegAppendTailVideo({
+          mainInput: outPath,
+          tailInput: cardVideoPath,
+          output: finalOut,
+          width: args.width,
+          height: args.height,
+          tailDurationSec,
+          tailRepeat,
+          verbose: args.verbose,
+        });
+        fs.unlinkSync(outPath);
+        fs.renameSync(finalOut, outPath);
+        console.log(
+          `Appended video end card (source_content/card.mp4) x${tailRepeat} to: ${outPath}`,
+        );
+      }
     }
   }
 
-  const versionedOutPath = path.join(
-    args.outputDir,
-    `${outputSlug}.${timestampTag()}.mp4`,
-  );
-  fs.copyFileSync(outPath, versionedOutPath);
-  console.log(`Saved versioned output copy: ${versionedOutPath}`);
+  if (args.saveVersionedCopy) {
+    const versionedOutPath = path.join(
+      args.outputDir,
+      `${outputSlug}.${timestampTag()}.mp4`,
+    );
+    fs.copyFileSync(outPath, versionedOutPath);
+    console.log(`Saved versioned output copy: ${versionedOutPath}`);
+  }
 
   for (const o of overlays) {
     try {

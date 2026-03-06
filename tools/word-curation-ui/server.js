@@ -12,35 +12,77 @@ const ROOT = path.resolve(__dirname, "..", "..");
 const UI_ROOT = path.resolve(__dirname);
 const PORT = Number(process.env.PORT || 8790);
 
-const WORDS_FILE = path.resolve(ROOT, "source_content", "all_anime_top_2000.match.first2000.json");
+const WORDS_FILE = path.resolve(
+  ROOT,
+  "source_content",
+  "all_anime_top_2000.match.first2000.json",
+);
 const OUT_ROOT = path.resolve(ROOT, "out", "shorts");
 const MANIFEST_FILE = path.join(OUT_ROOT, "render-manifest.json");
-const RERANK_FILE = path.join(OUT_ROOT, "word-candidates-llm-top.qwen2.5-3b.full.json");
+const RERANK_FILE = path.join(
+  OUT_ROOT,
+  "word-candidates-llm-top.qwen2.5-3b.full.json",
+);
 const DB_FILE = path.join(OUT_ROOT, "word-candidates-db.json");
 const DB_FALLBACK_FILES = [
   path.join(ROOT, "out", "word-auto-fast", "word-candidates-db.json"),
-  path.join(ROOT, "source_content", "shingeki_no_kyojin", "subs", "word-candidates-db.json"),
+  path.join(
+    ROOT,
+    "source_content",
+    "shingeki_no_kyojin",
+    "subs",
+    "word-candidates-db.json",
+  ),
 ];
 const RERANK_FALLBACK_FILES = [
-  path.join(ROOT, "out", "saveFile", "word-candidates-llm-top.qwen2.5-3b.full.backup.json"),
+  path.join(
+    ROOT,
+    "out",
+    "saveFile",
+    "word-candidates-llm-top.qwen2.5-3b.full.backup.json",
+  ),
 ];
 const LOG_FILE = path.join(OUT_ROOT, "curation-log.jsonl");
 const PREVIEW_DIR = path.join(OUT_ROOT, "work", "previews");
 const LIVE_POOL_DIR = path.join(OUT_ROOT, "work", "live-pools");
-const FAMILY_MEANINGS_FILE = path.join(ROOT, "source_content", "family-meanings.json");
+const FAMILY_MEANINGS_FILE = path.join(
+  ROOT,
+  "source_content",
+  "family-meanings.json",
+);
 const UI_PRE_PAD_MS = Math.max(0, Number(process.env.UI_PRE_PAD_MS || 350));
 const UI_POST_PAD_MS = Math.max(0, Number(process.env.UI_POST_PAD_MS || 550));
-const UI_MAX_CLIP_MS = Math.max(500, Number(process.env.UI_MAX_CLIP_MS || 3200));
-const UI_MIN_PREVIEW_MS = Math.max(200, Number(process.env.UI_MIN_PREVIEW_MS || 1100));
-const UI_AV_EVAL = !/^(0|false|no|off)$/i.test(String(process.env.UI_AV_EVAL || "1"));
-const UI_AV_WHISPER_MODEL = String(process.env.UI_AV_WHISPER_MODEL || "medium").trim();
-const UI_AV_WHISPER_LANGUAGE = String(process.env.UI_AV_WHISPER_LANGUAGE || "Japanese").trim();
-const UI_AV_VISION_MODEL = String(process.env.UI_AV_VISION_MODEL || "qwen3-vl:8b").trim();
-const UI_AV_OLLAMA_HOST = String(process.env.UI_AV_OLLAMA_HOST || process.env.OLLAMA_HOST || "http://127.0.0.1:11434").trim();
+const UI_MAX_CLIP_MS = Math.max(
+  500,
+  Number(process.env.UI_MAX_CLIP_MS || 3200),
+);
+const UI_MIN_PREVIEW_MS = Math.max(
+  200,
+  Number(process.env.UI_MIN_PREVIEW_MS || 1100),
+);
+const UI_AV_EVAL = !/^(0|false|no|off)$/i.test(
+  String(process.env.UI_AV_EVAL || "1"),
+);
+const UI_AV_WHISPER_MODEL = String(
+  process.env.UI_AV_WHISPER_MODEL || "medium",
+).trim();
+const UI_AV_WHISPER_LANGUAGE = String(
+  process.env.UI_AV_WHISPER_LANGUAGE || "Japanese",
+).trim();
+const UI_AV_VISION_MODEL = String(
+  process.env.UI_AV_VISION_MODEL || "qwen3-vl:8b",
+).trim();
+const UI_AV_OLLAMA_HOST = String(
+  process.env.UI_AV_OLLAMA_HOST ||
+    process.env.OLLAMA_HOST ||
+    "http://127.0.0.1:11434",
+).trim();
 const UI_AV_MIN_ASR_SIM = Number.isFinite(Number(process.env.UI_AV_MIN_ASR_SIM))
   ? Number(process.env.UI_AV_MIN_ASR_SIM)
   : 0.5;
-const UI_AV_MIN_VISION_SIM = Number.isFinite(Number(process.env.UI_AV_MIN_VISION_SIM))
+const UI_AV_MIN_VISION_SIM = Number.isFinite(
+  Number(process.env.UI_AV_MIN_VISION_SIM),
+)
   ? Number(process.env.UI_AV_MIN_VISION_SIM)
   : 0.42;
 const UI_AV_TIMEOUT_MS = Number.isFinite(Number(process.env.UI_AV_TIMEOUT_MS))
@@ -73,7 +115,21 @@ const DEFAULT_EN_SUBS_DIR = fs.existsSync(DEFAULT_EN_SUBS_EMBEDDED)
   : fs.existsSync(DEFAULT_EN_SUBS_LEGACY)
     ? DEFAULT_EN_SUBS_LEGACY
     : null;
-const DEFAULT_VIDEOS_DIR = path.join(ROOT, "source_content", "shingeki_no_kyojin", "videos");
+const DEFAULT_VIDEOS_DIR = path.join(
+  ROOT,
+  "source_content",
+  "shingeki_no_kyojin",
+  "videos",
+);
+const DEFAULT_MANUAL_OUTPUT_DIR = path.join(ROOT, "out", "range-shorts");
+const VIDEO_SCAN_ROOTS = [
+  DEFAULT_VIDEOS_DIR,
+  path.join(ROOT, "out", "source_content"),
+];
+const VIDEO_STREAM_ROOTS = [
+  path.join(ROOT, "source_content"),
+  path.join(ROOT, "out", "source_content"),
+];
 const livePoolCache = new Map();
 
 const jobs = new Map();
@@ -158,19 +214,24 @@ function appendUiAvEvalArgs(args) {
   args.push("--avEval");
   args.push("--avQueryOnly");
   if (UI_AV_WHISPER_MODEL) args.push("--avWhisperModel", UI_AV_WHISPER_MODEL);
-  if (UI_AV_WHISPER_LANGUAGE) args.push("--avWhisperLanguage", UI_AV_WHISPER_LANGUAGE);
+  if (UI_AV_WHISPER_LANGUAGE)
+    args.push("--avWhisperLanguage", UI_AV_WHISPER_LANGUAGE);
   if (UI_AV_VISION_MODEL) args.push("--avVisionModel", UI_AV_VISION_MODEL);
   if (UI_AV_OLLAMA_HOST) args.push("--avOllamaHost", UI_AV_OLLAMA_HOST);
-  if (Number.isFinite(UI_AV_MIN_ASR_SIM)) args.push("--avMinAsrSim", String(UI_AV_MIN_ASR_SIM));
-  if (Number.isFinite(UI_AV_MIN_VISION_SIM)) args.push("--avMinVisionSim", String(UI_AV_MIN_VISION_SIM));
-  if (Number.isFinite(UI_AV_TIMEOUT_MS)) args.push("--avTimeoutMs", String(UI_AV_TIMEOUT_MS));
+  if (Number.isFinite(UI_AV_MIN_ASR_SIM))
+    args.push("--avMinAsrSim", String(UI_AV_MIN_ASR_SIM));
+  if (Number.isFinite(UI_AV_MIN_VISION_SIM))
+    args.push("--avMinVisionSim", String(UI_AV_MIN_VISION_SIM));
+  if (Number.isFinite(UI_AV_TIMEOUT_MS))
+    args.push("--avTimeoutMs", String(UI_AV_TIMEOUT_MS));
 }
 
 function loadFamilyMeaningMap(filePath = FAMILY_MEANINGS_FILE) {
   if (!filePath || !fs.existsSync(filePath)) return {};
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+      return parsed;
   } catch {}
   return {};
 }
@@ -178,7 +239,8 @@ function loadFamilyMeaningMap(filePath = FAMILY_MEANINGS_FILE) {
 function getFamilyMeaningOverride(map, query, family) {
   if (!family || !map || typeof map !== "object") return "";
   const direct = map[family];
-  if (typeof direct === "string" && direct.trim()) return normalizeMeaning(direct);
+  if (typeof direct === "string" && direct.trim())
+    return normalizeMeaning(direct);
   const nested = map[query];
   if (nested && typeof nested === "object" && !Array.isArray(nested)) {
     const v = nested[family];
@@ -187,7 +249,12 @@ function getFamilyMeaningOverride(map, query, family) {
   return "";
 }
 
-function saveFamilyMeaningOverride({ query, family, meaning, filePath = FAMILY_MEANINGS_FILE }) {
+function saveFamilyMeaningOverride({
+  query,
+  family,
+  meaning,
+  filePath = FAMILY_MEANINGS_FILE,
+}) {
   const q = String(query || "").trim();
   const f = String(family || "").trim();
   const m = normalizeMeaning(meaning);
@@ -373,7 +440,9 @@ function buildLivePoolForWord(word, family = "") {
       .split(/\r?\n/g)
       .slice(-20)
       .join("\n");
-    throw new Error(`extract-clips failed for "${q}" (${res.status})${tail ? `\n${tail}` : ""}`);
+    throw new Error(
+      `extract-clips failed for "${q}" (${res.status})${tail ? `\n${tail}` : ""}`,
+    );
   }
 
   const payload = readJsonOrNull(outFile);
@@ -391,7 +460,9 @@ function getLivePool(word, family = "") {
   const cached = livePoolCache.get(key);
   if (cached) return cached;
   const payload = readJsonOrNull(livePoolFilePath(q, fam));
-  const pool = Array.isArray(payload?.pool) ? payload.pool.map((rec, i) => normalizeCandidateRecord(rec, i + 1)) : [];
+  const pool = Array.isArray(payload?.pool)
+    ? payload.pool.map((rec, i) => normalizeCandidateRecord(rec, i + 1))
+    : [];
   livePoolCache.set(key, pool);
   return pool;
 }
@@ -444,7 +515,9 @@ function loadWordsArray() {
 
 function getMaps() {
   const manifest = readJsonOrNull(MANIFEST_FILE) || { words: [] };
-  const rerankSources = [{ file: RERANK_FILE, data: readJsonOrNull(RERANK_FILE) }];
+  const rerankSources = [
+    { file: RERANK_FILE, data: readJsonOrNull(RERANK_FILE) },
+  ];
   for (const f of RERANK_FALLBACK_FILES) {
     rerankSources.push({ file: f, data: readJsonOrNull(f) });
   }
@@ -476,7 +549,14 @@ function getMaps() {
     }
   }
 
-  return { manifest, rerank: { words: [...rerankMap.values()] }, db: { words: [...dbMap.values()] }, manifestMap, rerankMap, dbMap };
+  return {
+    manifest,
+    rerank: { words: [...rerankMap.values()] },
+    db: { words: [...dbMap.values()] },
+    manifestMap,
+    rerankMap,
+    dbMap,
+  };
 }
 
 function deriveWordStatus(manifestRec, rerankRec, dbRec) {
@@ -501,15 +581,24 @@ function listWords() {
     const rerankRec = rerankMap.get(item.word) || null;
     const dbRec = dbMap.get(item.word) || null;
 
-    const pool = uniquePositiveInts((rerankRec?.top || []).map((x) => x?.candidateIndex));
+    const pool = uniquePositiveInts(
+      (rerankRec?.top || []).map((x) => x?.candidateIndex),
+    );
     const dbPool = dbRankedIndexPool(dbRec);
     const savedPicks = uniquePositiveInts(manifestRec?.picks || []);
     const hasRenderedOverride =
-      savedPicks.length > 0 && String(manifestRec?.status || "").toLowerCase() === "rendered";
+      savedPicks.length > 0 &&
+      String(manifestRec?.status || "").toLowerCase() === "rendered";
     // Use ranked picks by default, but preserve saved manual picks for already-rendered words.
     const picks = hasRenderedOverride
-      ? fillToTopK(savedPicks, pool.length > 0 ? pool : dbPool.length > 0 ? dbPool : savedPicks)
-      : fillToTopK(pool.length > 0 ? pool : dbPool, pool.length > 0 ? pool : dbPool);
+      ? fillToTopK(
+          savedPicks,
+          pool.length > 0 ? pool : dbPool.length > 0 ? dbPool : savedPicks,
+        )
+      : fillToTopK(
+          pool.length > 0 ? pool : dbPool,
+          pool.length > 0 ? pool : dbPool,
+        );
 
     return {
       idx: item.idx,
@@ -519,7 +608,9 @@ function listWords() {
       meaning: item.meaning,
       matchForms: item.matchForms || [],
       status: deriveWordStatus(manifestRec, rerankRec, dbRec),
-      candidateCount: Number(dbRec?.candidateCount || rerankRec?.sourceCandidateCount || 0),
+      candidateCount: Number(
+        dbRec?.candidateCount || rerankRec?.sourceCandidateCount || 0,
+      ),
       picks,
     };
   });
@@ -553,9 +644,13 @@ function getWordDetail(word, family = "") {
   const manifestRec = manifestMap.get(word) || null;
   const rerankRec = rerankMap.get(word) || null;
   const dbRec = dbMap.get(word) || null;
-  const log = readJsonlOrEmpty(LOG_FILE).filter((x) => String(x?.word || "") === word);
+  const log = readJsonlOrEmpty(LOG_FILE).filter(
+    (x) => String(x?.word || "") === word,
+  );
 
-  const rerankPool = uniquePositiveInts((rerankRec?.top || []).map((x) => x?.candidateIndex));
+  const rerankPool = uniquePositiveInts(
+    (rerankRec?.top || []).map((x) => x?.candidateIndex),
+  );
   let livePool = [];
   let livePoolError = null;
   try {
@@ -564,7 +659,9 @@ function getWordDetail(word, family = "") {
     livePool = [];
     livePoolError = err?.message || String(err);
   }
-  const familyDbPool = familyFilter ? familyTextPoolFromDb(dbRec, familyFilter) : [];
+  const familyDbPool = familyFilter
+    ? familyTextPoolFromDb(dbRec, familyFilter)
+    : [];
   const textPool = familyFilter
     ? livePool.length > 0
       ? livePool
@@ -638,16 +735,16 @@ function getWordDetail(word, family = "") {
           ? "family-live-pool"
           : "family-db-text"
         : rerankPool.length > 0
-            ? "rerank"
-            : rerankCandidateCount > 0 && dbCandidateCount > 0
-              ? "rerank-empty-db-fallback"
-              : rerankCandidateCount > 0
-                ? "rerank-empty"
-            : dbCandidateCount > 0
-              ? "db"
-              : livePool.length > 0
-                ? "live-pool"
-                : "none",
+          ? "rerank"
+          : rerankCandidateCount > 0 && dbCandidateCount > 0
+            ? "rerank-empty-db-fallback"
+            : rerankCandidateCount > 0
+              ? "rerank-empty"
+              : dbCandidateCount > 0
+                ? "db"
+                : livePool.length > 0
+                  ? "live-pool"
+                  : "none",
     },
     notes: log,
   };
@@ -655,7 +752,8 @@ function getWordDetail(word, family = "") {
 
 function extractWordFromEntry(entry) {
   if (typeof entry === "string") return entry.trim();
-  if (entry && typeof entry === "object") return String(entry.word || "").trim();
+  if (entry && typeof entry === "object")
+    return String(entry.word || "").trim();
   return "";
 }
 
@@ -705,22 +803,29 @@ function candidateFromSources(word, candidateIndex, family = "") {
   if (fam) {
     // Family mode uses family-local indexing; live pool (or family-filtered DB) is authoritative.
     const livePool = getLivePool(word, fam);
-    if (idx <= livePool.length) return normalizeCandidateRecord(livePool[idx - 1], idx);
+    if (idx <= livePool.length)
+      return normalizeCandidateRecord(livePool[idx - 1], idx);
     const { dbMap } = getMaps();
     const dbRec = dbMap.get(word);
     const famPool = familyTextPoolFromDb(dbRec, fam);
-    if (idx <= famPool.length) return normalizeCandidateRecord(famPool[idx - 1], idx);
+    if (idx <= famPool.length)
+      return normalizeCandidateRecord(famPool[idx - 1], idx);
     return null;
   }
 
   // Non-family mode uses DB/rerank candidateIndex semantics.
   const { dbMap } = getMaps();
   const dbRec = dbMap.get(word);
-  if (dbRec && Array.isArray(dbRec.candidates) && idx <= dbRec.candidates.length) {
+  if (
+    dbRec &&
+    Array.isArray(dbRec.candidates) &&
+    idx <= dbRec.candidates.length
+  ) {
     return normalizeCandidateRecord(dbRec.candidates[idx - 1], idx);
   }
   const livePool = getLivePool(word, fam);
-  if (idx <= livePool.length) return normalizeCandidateRecord(livePool[idx - 1], idx);
+  if (idx <= livePool.length)
+    return normalizeCandidateRecord(livePool[idx - 1], idx);
   return null;
 }
 
@@ -728,7 +833,9 @@ function ensurePreviewClip(word, candidateIndex, family = "") {
   const fam = String(family || "").trim();
   const candidate = candidateFromSources(word, candidateIndex, fam);
   if (!candidate) {
-    throw new Error(`Candidate ${candidateIndex} not found for word "${word}".`);
+    throw new Error(
+      `Candidate ${candidateIndex} not found for word "${word}".`,
+    );
   }
 
   const videoFile = path.resolve(ROOT, String(candidate.videoFile || ""));
@@ -738,7 +845,11 @@ function ensurePreviewClip(word, candidateIndex, family = "") {
 
   const rawStartMs = Number(candidate.clipStartMs);
   const rawEndMs = Number(candidate.clipEndMs);
-  if (!Number.isFinite(rawStartMs) || !Number.isFinite(rawEndMs) || rawEndMs <= rawStartMs) {
+  if (
+    !Number.isFinite(rawStartMs) ||
+    !Number.isFinite(rawEndMs) ||
+    rawEndMs <= rawStartMs
+  ) {
     throw new Error(`Invalid clip time range for candidate ${candidateIndex}.`);
   }
   const startMs = Math.max(0, rawStartMs - UI_PRE_PAD_MS);
@@ -803,7 +914,12 @@ function ensurePreviewClip(word, candidateIndex, family = "") {
     res.on("error", (e) => reject(e));
     res.on("close", (code) => {
       if (code === 0 && fs.existsSync(outPath)) resolve(outPath);
-      else reject(new Error(`ffmpeg failed (${code}): ${err.split("\n").slice(-10).join("\n")}`));
+      else
+        reject(
+          new Error(
+            `ffmpeg failed (${code}): ${err.split("\n").slice(-10).join("\n")}`,
+          ),
+        );
     });
   });
 }
@@ -911,25 +1027,37 @@ async function maybeRunNext() {
 function enqueueRenderWord(word) {
   return createJob("render-word", { word }, async (job) => {
     appendJobLog(job, `Render word: ${word}`);
-    await runNode([path.join("scripts", "word-curate.js"), "render", word], job);
+    await runNode(
+      [path.join("scripts", "word-curate.js"), "render", word],
+      job,
+    );
   });
 }
 
 function enqueueRenderMany(words) {
-  return createJob("render-many", { count: words.length, words }, async (job) => {
-    let i = 0;
-    for (const word of words) {
-      i++;
-      appendJobLog(job, `[${i}/${words.length}] render ${word}`);
-      await runNode([path.join("scripts", "word-curate.js"), "render", word], job);
-    }
-  });
+  return createJob(
+    "render-many",
+    { count: words.length, words },
+    async (job) => {
+      let i = 0;
+      for (const word of words) {
+        i++;
+        appendJobLog(job, `[${i}/${words.length}] render ${word}`);
+        await runNode(
+          [path.join("scripts", "word-curate.js"), "render", word],
+          job,
+        );
+      }
+    },
+  );
 }
 
 function upsertManifestWord({ word, picks, reason, output, family }) {
   const manifest = readJsonOrNull(MANIFEST_FILE);
   if (!manifest || !Array.isArray(manifest.words)) return;
-  const idx = manifest.words.findIndex((w) => String(w?.word || "").trim() === word);
+  const idx = manifest.words.findIndex(
+    (w) => String(w?.word || "").trim() === word,
+  );
   const next = {
     word,
     status: "rendered",
@@ -946,25 +1074,34 @@ function upsertManifestWord({ word, picks, reason, output, family }) {
   } else {
     manifest.words.push(next);
   }
-  fs.writeFileSync(MANIFEST_FILE, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  fs.writeFileSync(
+    MANIFEST_FILE,
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    "utf8",
+  );
 }
 
-async function runPickRender(job, {
-  word,
-  picks,
-  reason = "",
-  family = "",
-  meaning = "",
-  prePadMs = null,
-  postPadMs = null,
-  slotPads = [],
-}) {
+async function runPickRender(
+  job,
+  {
+    word,
+    picks,
+    reason = "",
+    family = "",
+    meaning = "",
+    prePadMs = null,
+    postPadMs = null,
+    slotPads = [],
+  },
+) {
   const fam = String(family || "").trim();
   const m = String(meaning || "").trim();
   const prePad = normalizePadMs(prePadMs, UI_PRE_PAD_MS);
   const postPad = normalizePadMs(postPadMs, UI_POST_PAD_MS);
   const normalizedSlotPads = normalizeSlotPads(slotPads);
-  const slotPadMap = new Map(normalizedSlotPads.map((x) => [x.candidateIndex, x]));
+  const slotPadMap = new Map(
+    normalizedSlotPads.map((x) => [x.candidateIndex, x]),
+  );
   const hasSlotPadOverride = normalizedSlotPads.length > 0;
   const targetPicks = uniquePositiveInts(picks).slice(0, 5);
   if (targetPicks.length === 0) {
@@ -983,7 +1120,9 @@ async function runPickRender(job, {
     const selectedPool = targetPicks.map((candidateIndex) => {
       const base = candidateFromSources(word, candidateIndex, fam);
       if (!base) {
-        throw new Error(`Candidate ${candidateIndex} not found for "${word}"${fam ? ` family=${fam}` : ""}.`);
+        throw new Error(
+          `Candidate ${candidateIndex} not found for "${word}"${fam ? ` family=${fam}` : ""}.`,
+        );
       }
       const p = slotPadMap.get(candidateIndex) || null;
       const pre = p?.prePadMs == null ? prePad : p.prePadMs;
@@ -1066,7 +1205,10 @@ async function runPickRender(job, {
         path.join(OUT_ROOT, `${safeFilename(word)}.mp4`),
         path.join(OUT_ROOT, `${safeFilename(word)}_${safeFilename(fam)}.mp4`),
         path.join(OUT_ROOT, `${safeFilename(word)}_clean_shorts.mp4`),
-        path.join(OUT_ROOT, `${safeFilename(word)}_${safeFilename(fam)}_clean_shorts.mp4`),
+        path.join(
+          OUT_ROOT,
+          `${safeFilename(word)}_${safeFilename(fam)}_clean_shorts.mp4`,
+        ),
       ];
       const renderedOut = renderedOutCandidates.find((p) => fs.existsSync(p));
       if (!renderedOut) {
@@ -1097,8 +1239,14 @@ async function runPickRender(job, {
   if (!fam) {
     const { dbMap } = getMaps();
     const dbRec = dbMap.get(word) || null;
-    if (!dbRec || !Array.isArray(dbRec.candidates) || dbRec.candidates.length === 0) {
-      throw new Error(`No DB candidates available for "${word}". Build DB before rendering picks.`);
+    if (
+      !dbRec ||
+      !Array.isArray(dbRec.candidates) ||
+      dbRec.candidates.length === 0
+    ) {
+      throw new Error(
+        `No DB candidates available for "${word}". Build DB before rendering picks.`,
+      );
     }
     const missing = targetPicks.filter((n) => n > dbRec.candidates.length);
     if (missing.length > 0) {
@@ -1172,7 +1320,10 @@ async function runPickRender(job, {
       }
       appendUiAvEvalArgs(args);
 
-      appendJobLog(job, `Pick ${word}: ${pickCsv} (pad=${prePad}/${postPad}ms)`);
+      appendJobLog(
+        job,
+        `Pick ${word}: ${pickCsv} (pad=${prePad}/${postPad}ms)`,
+      );
       await runNode(args, job);
 
       const renderedOutCandidates = [
@@ -1245,10 +1396,15 @@ async function runPickRender(job, {
   }
   appendUiAvEvalArgs(args);
 
-  appendJobLog(job, `Pick ${word}${fam ? ` family=${fam}` : ""}: ${pickCsv} (pad=${prePad}/${postPad}ms)`);
+  appendJobLog(
+    job,
+    `Pick ${word}${fam ? ` family=${fam}` : ""}: ${pickCsv} (pad=${prePad}/${postPad}ms)`,
+  );
   await runNode(args, job);
 
-  const outputSlug = fam ? `${safeFilename(word)}_${safeFilename(fam)}` : safeFilename(word);
+  const outputSlug = fam
+    ? `${safeFilename(word)}_${safeFilename(fam)}`
+    : safeFilename(word);
   const renderedOutCandidates = [
     path.join(OUT_ROOT, `${outputSlug}.mp4`),
     path.join(OUT_ROOT, `${outputSlug}_clean_shorts.mp4`),
@@ -1256,7 +1412,9 @@ async function runPickRender(job, {
   const renderedOut = renderedOutCandidates.find((p) => fs.existsSync(p));
   const canonical = path.join(OUT_ROOT, `${safeFilename(word)}.mp4`);
   if (!renderedOut) {
-    throw new Error(`Rendered output not found for ${word}${fam ? ` family=${fam}` : ""}.`);
+    throw new Error(
+      `Rendered output not found for ${word}${fam ? ` family=${fam}` : ""}.`,
+    );
   }
   fs.copyFileSync(renderedOut, canonical);
   appendJobLog(job, `Copied output -> ${canonical}`);
@@ -1284,89 +1442,166 @@ function enqueuePick(
   const prePad = normalizePadMs(prePadMs, UI_PRE_PAD_MS);
   const postPad = normalizePadMs(postPadMs, UI_POST_PAD_MS);
   const normalizedSlotPads = normalizeSlotPads(slotPads);
-  return createJob("pick", {
-    word,
-    picks,
-    reason,
-    family: fam || null,
-    meaning: m || null,
-    prePadMs: prePad,
-    postPadMs: postPad,
-    slotPads: normalizedSlotPads,
-  }, async (job) => {
-    await runPickRender(job, {
+  return createJob(
+    "pick",
+    {
       word,
       picks,
       reason,
-      family: fam,
-      meaning: m,
+      family: fam || null,
+      meaning: m || null,
       prePadMs: prePad,
       postPadMs: postPad,
       slotPads: normalizedSlotPads,
-    });
-  });
+    },
+    async (job) => {
+      await runPickRender(job, {
+        word,
+        picks,
+        reason,
+        family: fam,
+        meaning: m,
+        prePadMs: prePad,
+        postPadMs: postPad,
+        slotPads: normalizedSlotPads,
+      });
+    },
+  );
 }
 
 function enqueueReplace(word, spec, reason) {
   return createJob("replace", { word, spec, reason }, async (job) => {
-    const m = String(spec || "").trim().match(/^(\d+)\s*=\s*(\d+)$/);
+    const m = String(spec || "")
+      .trim()
+      .match(/^(\d+)\s*=\s*(\d+)$/);
     if (!m) throw new Error(`Bad replace spec "${spec}"`);
     const slot = Number(m[1]);
     const to = Number(m[2]);
     const detail = getWordDetail(word, "");
-    const picks = uniquePositiveInts(detail?.manifest?.picks || detail?.picks || []).slice(0, 5);
+    const picks = uniquePositiveInts(
+      detail?.manifest?.picks || detail?.picks || [],
+    ).slice(0, 5);
     if (picks.length === 0) throw new Error(`No current picks for ${word}`);
-    if (slot < 1 || slot > picks.length) throw new Error(`Slot ${slot} out of range`);
+    if (slot < 1 || slot > picks.length)
+      throw new Error(`Slot ${slot} out of range`);
     if (picks.some((v, i) => i !== slot - 1 && v === to)) {
       throw new Error(`Replace ${spec} would create duplicate picks.`);
     }
     picks[slot - 1] = to;
     appendJobLog(job, `Replace ${word}: ${spec} -> picks=${picks.join(",")}`);
-    await runPickRender(job, { word, picks, reason: String(reason || "").trim() || `replace ${spec}` });
+    await runPickRender(job, {
+      word,
+      picks,
+      reason: String(reason || "").trim() || `replace ${spec}`,
+    });
   });
 }
 
 function enqueueRegenerateWord(word, family = "") {
   const fam = String(family || "").trim();
-  return createJob("regenerate-word", { word, family: fam || null }, async (job) => {
-    appendJobLog(job, `Regenerate candidates: ${word}${fam ? ` family=${fam}` : ""}`);
-    const pool = buildLivePoolForWord(word, fam);
-    appendJobLog(job, `Candidates ready: ${pool.length}`);
-  });
+  return createJob(
+    "regenerate-word",
+    { word, family: fam || null },
+    async (job) => {
+      appendJobLog(
+        job,
+        `Regenerate candidates: ${word}${fam ? ` family=${fam}` : ""}`,
+      );
+      const pool = buildLivePoolForWord(word, fam);
+      appendJobLog(job, `Candidates ready: ${pool.length}`);
+    },
+  );
 }
 
 function enqueueCutClips(word, picks, family = "") {
   const fam = String(family || "").trim();
   const target = uniquePositiveInts(picks).slice(0, 5);
-  return createJob("cut-clips", { word, family: fam || null, picks: target }, async (job) => {
-    if (target.length === 0) {
-      throw new Error("picks required for cut-clips");
-    }
-    if (fam) {
-      const existing = getLivePool(word, fam);
-      if (!Array.isArray(existing) || existing.length === 0) {
-        appendJobLog(job, `Building family pool first: ${word} family=${fam}`);
-        buildLivePoolForWord(word, fam);
+  return createJob(
+    "cut-clips",
+    { word, family: fam || null, picks: target },
+    async (job) => {
+      if (target.length === 0) {
+        throw new Error("picks required for cut-clips");
       }
-    }
-    let ok = 0;
-    for (const idx of target) {
-      appendJobLog(
-        job,
-        `Cut preview ${word}${fam ? ` family=${fam}` : ""} #${idx}`,
-      );
+      if (fam) {
+        const existing = getLivePool(word, fam);
+        if (!Array.isArray(existing) || existing.length === 0) {
+          appendJobLog(
+            job,
+            `Building family pool first: ${word} family=${fam}`,
+          );
+          buildLivePoolForWord(word, fam);
+        }
+      }
+      let ok = 0;
+      for (const idx of target) {
+        appendJobLog(
+          job,
+          `Cut preview ${word}${fam ? ` family=${fam}` : ""} #${idx}`,
+        );
+        try {
+          await ensurePreviewClip(word, idx, fam);
+          ok++;
+        } catch (err) {
+          appendJobLog(job, `Preview failed #${idx}: ${err?.message || err}`);
+        }
+      }
+      appendJobLog(job, `Cut clips done: ${ok}/${target.length}`);
+      if (ok === 0) {
+        throw new Error("No preview clips could be generated.");
+      }
+    },
+  );
+}
+
+function listAvailableVideoPaths() {
+  const out = [];
+  const seen = new Set();
+  const validExt = new Set([".mp4", ".mkv", ".mov", ".avi", ".webm"]);
+
+  for (const root of VIDEO_SCAN_ROOTS) {
+    if (!root || !fs.existsSync(root)) continue;
+    const stack = [root];
+    while (stack.length > 0) {
+      const cur = stack.pop();
+      let entries = [];
       try {
-        await ensurePreviewClip(word, idx, fam);
-        ok++;
-      } catch (err) {
-        appendJobLog(job, `Preview failed #${idx}: ${err?.message || err}`);
+        entries = fs.readdirSync(cur, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const ent of entries) {
+        const abs = path.join(cur, ent.name);
+        if (ent.isDirectory()) {
+          stack.push(abs);
+          continue;
+        }
+        if (!ent.isFile()) continue;
+        if (!validExt.has(path.extname(ent.name).toLowerCase())) continue;
+        const rel = path.relative(ROOT, abs).split(path.sep).join("/");
+        if (seen.has(rel)) continue;
+        seen.add(rel);
+        out.push(rel);
       }
     }
-    appendJobLog(job, `Cut clips done: ${ok}/${target.length}`);
-    if (ok === 0) {
-      throw new Error("No preview clips could be generated.");
-    }
+  }
+
+  out.sort((a, b) => a.localeCompare(b));
+  return out;
+}
+
+function resolveStreamableVideo(fileInput) {
+  const input = String(fileInput || "").trim();
+  if (!input) return null;
+  const candidate = path.resolve(ROOT, input);
+  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) return null;
+  const ext = path.extname(candidate).toLowerCase();
+  if (![".mp4", ".mkv", ".mov", ".avi", ".webm"].includes(ext)) return null;
+  const ok = VIDEO_STREAM_ROOTS.some((root) => {
+    const absRoot = path.resolve(root);
+    return candidate === absRoot || candidate.startsWith(`${absRoot}${path.sep}`);
   });
+  return ok ? candidate : null;
 }
 
 function contentType(filePath) {
@@ -1375,6 +1610,7 @@ function contentType(filePath) {
   if (ext === ".css") return "text/css; charset=utf-8";
   if (ext === ".js") return "application/javascript; charset=utf-8";
   if (ext === ".json") return "application/json; charset=utf-8";
+  if (ext === ".ico") return "image/x-icon";
   if (ext === ".mp4") return "video/mp4";
   return "application/octet-stream";
 }
@@ -1434,7 +1670,8 @@ function sendStatic(req, res, pathname) {
   if (rel.startsWith("/out/")) {
     const abs = path.resolve(ROOT, "." + rel);
     if (!abs.startsWith(ROOT)) return json(res, 403, { error: "forbidden" });
-    if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return json(res, 404, { error: "not found" });
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isFile())
+      return json(res, 404, { error: "not found" });
     res.setHeader("Cache-Control", "no-store");
     streamFile(req, res, abs);
     return;
@@ -1442,7 +1679,8 @@ function sendStatic(req, res, pathname) {
 
   const abs = path.resolve(UI_ROOT, "." + rel);
   if (!abs.startsWith(UI_ROOT)) return json(res, 403, { error: "forbidden" });
-  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return json(res, 404, { error: "not found" });
+  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile())
+    return json(res, 404, { error: "not found" });
 
   res.setHeader("Cache-Control", "no-store");
   streamFile(req, res, abs);
@@ -1494,7 +1732,10 @@ const server = http.createServer(async (req, res) => {
       const family = String(body.family || "").trim();
       const meaning = String(body.meaning || "").trim();
       if (!word) return json(res, 400, { error: "word is required" });
-      if (!family) return json(res, 400, { error: "family is required for meaning override" });
+      if (!family)
+        return json(res, 400, {
+          error: "family is required for meaning override",
+        });
       const result = updateFamilyMeaningOnly(word, family, meaning);
       return json(res, 200, {
         ok: true,
@@ -1515,10 +1756,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: "candidate must be positive integer" });
       }
       const outPath = await ensurePreviewClip(word, candidateIndex, family);
-      const rel = path
-        .relative(ROOT, outPath)
-        .split(path.sep)
-        .join("/");
+      const rel = path.relative(ROOT, outPath).split(path.sep).join("/");
       return json(res, 200, {
         ok: true,
         url: encodeURI(`/${rel}`),
@@ -1543,7 +1781,11 @@ const server = http.createServer(async (req, res) => {
           payload: j.payload,
           logTail: j.logs.slice(-20),
         }));
-      return json(res, 200, { activeJobId, queueLength: queue.length, jobs: list });
+      return json(res, 200, {
+        activeJobId,
+        queueLength: queue.length,
+        jobs: list,
+      });
     }
 
     if (pathname.startsWith("/api/jobs/") && req.method === "GET") {
@@ -1566,7 +1808,8 @@ const server = http.createServer(async (req, res) => {
       const words = Array.isArray(body.words)
         ? body.words.map((w) => String(w || "").trim()).filter(Boolean)
         : [];
-      if (words.length === 0) return json(res, 400, { error: "words[] required" });
+      if (words.length === 0)
+        return json(res, 400, { error: "words[] required" });
       const job = enqueueRenderMany(words);
       return json(res, 200, { ok: true, jobId: job.id, count: words.length });
     }
@@ -1582,7 +1825,8 @@ const server = http.createServer(async (req, res) => {
       const picks = uniquePositiveInts(body.picks || []);
       const reason = String(body.reason || "").trim();
       if (!word) return json(res, 400, { error: "word is required" });
-      if (picks.length === 0) return json(res, 400, { error: "picks required" });
+      if (picks.length === 0)
+        return json(res, 400, { error: "picks required" });
       const job = enqueuePick(
         word,
         picks.slice(0, 5),
@@ -1602,7 +1846,8 @@ const server = http.createServer(async (req, res) => {
       const spec = String(body.spec || "").trim();
       const reason = String(body.reason || "").trim();
       if (!word) return json(res, 400, { error: "word is required" });
-      if (!spec) return json(res, 400, { error: "spec is required (e.g. 2=10)" });
+      if (!spec)
+        return json(res, 400, { error: "spec is required (e.g. 2=10)" });
       const job = enqueueReplace(word, spec, reason);
       return json(res, 200, { ok: true, jobId: job.id });
     }
@@ -1622,8 +1867,119 @@ const server = http.createServer(async (req, res) => {
       const family = String(body.family || "").trim();
       const picks = uniquePositiveInts(body.picks || []);
       if (!word) return json(res, 400, { error: "word is required" });
-      if (picks.length === 0) return json(res, 400, { error: "picks required" });
+      if (picks.length === 0)
+        return json(res, 400, { error: "picks required" });
       const job = enqueueCutClips(word, picks, family);
+      return json(res, 200, { ok: true, jobId: job.id });
+    }
+
+    if (pathname === "/api/videos" && req.method === "GET") {
+      const files = listAvailableVideoPaths();
+      return json(res, 200, { videos: files });
+    }
+
+    if (pathname === "/api/video" && req.method === "GET") {
+      const file = String(parsed.query.file || "").trim();
+      const abs = resolveStreamableVideo(file);
+      if (!abs) return json(res, 404, { error: "video not found" });
+      res.setHeader("Cache-Control", "no-store");
+      streamFile(req, res, abs);
+      return;
+    }
+
+    if (pathname === "/api/manual-clip" && req.method === "POST") {
+      const body = await readBody(req);
+      const videoFile = String(body.videoFile || "").trim();
+      const startTime = String(body.startTime || "").trim();
+      const endTime = String(body.endTime || "").trim();
+      const outputDir = body.outputDir
+        ? path.resolve(ROOT, body.outputDir)
+        : DEFAULT_MANUAL_OUTPUT_DIR;
+
+      if (!videoFile) return json(res, 400, { error: "videoFile is required" });
+      if (!startTime) return json(res, 400, { error: "startTime is required" });
+      if (!endTime) return json(res, 400, { error: "endTime is required" });
+
+      const scriptPath = path.join(ROOT, "scripts", "make-manual-clip.js");
+      const job = createJob(
+        "range-short",
+        { videoFile, startTime, endTime, outputDir },
+        async (job) => {
+          appendJobLog(job, `Creating range short: ${videoFile}`);
+          appendJobLog(job, `  Start: ${startTime}`);
+          appendJobLog(job, `  End: ${endTime}`);
+          appendJobLog(job, `  Output: ${outputDir}`);
+
+          const args = [
+            scriptPath,
+            "--videoFile",
+            videoFile,
+            "--startTime",
+            startTime,
+            "--endTime",
+            endTime,
+            "--outputDir",
+            outputDir,
+          ];
+
+          if (DEFAULT_VIDEOS_DIR) {
+            args.push("--videosDir", DEFAULT_VIDEOS_DIR);
+          }
+          if (DEFAULT_EN_SUBS_DIR) {
+            args.push("--enSubsDir", DEFAULT_EN_SUBS_DIR);
+          }
+          if (DEFAULT_JP_SUBS_DIR) {
+            args.push("--jpSubsDir", DEFAULT_JP_SUBS_DIR);
+          }
+
+          const proc = spawn("node", args, {
+            cwd: ROOT,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+
+          let stdout = "";
+          let stderr = "";
+
+          proc.stdout.on("data", (data) => {
+            const text = data.toString();
+            stdout += text;
+            for (const line of text.split("\n")) {
+              if (line.trim()) appendJobLog(job, `[stdout] ${line}`);
+            }
+          });
+
+          proc.stderr.on("data", (data) => {
+            const text = data.toString();
+            stderr += text;
+            for (const line of text.split("\n")) {
+              if (line.trim()) appendJobLog(job, `[stderr] ${line}`);
+            }
+          });
+
+          await new Promise((resolve, reject) => {
+            proc.on("exit", (code) => {
+              if (code === 0) resolve();
+              else reject(new Error(`Script exited with code ${code}`));
+            });
+            proc.on("error", reject);
+          });
+
+          const outputLine = stdout
+            .split(/\r?\n/g)
+            .map((x) => x.trim())
+            .find((x) => x.startsWith("OUTPUT_FILE:"));
+          if (outputLine) {
+            const outputFile = outputLine.replace(/^OUTPUT_FILE:\s*/, "").trim();
+            if (outputFile) {
+              job.payload.outputFile = outputFile;
+              appendJobLog(job, `Output file: ${outputFile}`);
+            }
+          }
+
+          appendJobLog(job, `Range short render complete`);
+        },
+      );
+
       return json(res, 200, { ok: true, jobId: job.id });
     }
 

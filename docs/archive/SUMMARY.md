@@ -349,5 +349,5 @@ npm run -s align-episode-subs -- --episode s4e30 --enSubsDir source_content/shin
 
 ## Related Docs
 - `RERANKING.md`
-- `AUTO_SHORT_THREAD_HANDOFF.md`
+- `docs/archive/AUTO_SHORT_THREAD_HANDOFF.md`
 - `README.md`

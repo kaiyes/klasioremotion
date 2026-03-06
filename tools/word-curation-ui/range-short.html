@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Range Short</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Anime Shorts</p>
+        <h1>Episode Range Short</h1>
+        <p class="subtitle">
+          Pick an episode file and render a vertical short from A to B.
+        </p>
+      </div>
+      <div class="top-actions">
+        <a class="btn btn-small" href="/">Back To Board</a>
+      </div>
+    </header>
+
+    <section class="statusbar card">
+      <div id="statusMsg" class="status">Ready.</div>
+      <div id="queueMeta" class="muted"></div>
+    </section>
+
+    <main class="detail" style="max-width: 960px; margin: 0 auto">
+      <section class="card">
+        <div class="card-head">
+          <h3>Video Selection</h3>
+          <button id="loadVideosBtn" class="btn btn-small">Load Videos</button>
+        </div>
+        <select id="videoSelect" class="full-width"></select>
+        <p class="muted">Scans `source_content/...` and `out/source_content/...`</p>
+      </section>
+
+      <section class="card">
+        <h3>Preview + Timeline</h3>
+        <video id="previewVideo" class="range-preview-video" controls preload="metadata"></video>
+        <div id="previewMeta" class="muted">Select a video to load preview.</div>
+        <div id="timeline" class="range-timeline" aria-label="Range timeline">
+          <div class="range-timeline-base"></div>
+          <div id="timelineSelection" class="range-timeline-selection"></div>
+          <div id="timelineCurrent" class="range-timeline-current"></div>
+          <button id="timelineStartHandle" class="range-handle start" type="button" aria-label="Start handle"></button>
+          <button id="timelineEndHandle" class="range-handle end" type="button" aria-label="End handle"></button>
+        </div>
+        <div class="toolbar">
+          <button id="setStartFromPlayheadBtn" class="btn btn-small">Set Start = Playhead</button>
+          <button id="setEndFromPlayheadBtn" class="btn btn-small">Set End = Playhead</button>
+          <button id="seekStartBtn" class="btn btn-small">Seek To Start</button>
+          <button id="seekEndBtn" class="btn btn-small">Seek To End</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Time Range</h3>
+        <div class="range-row">
+          <label class="inline"
+            >Start (MM:SS or HH:MM:SS)
+            <input id="startInput" type="text" value="5:00" />
+          </label>
+          <label class="inline"
+            >End (MM:SS or HH:MM:SS)
+            <input id="endInput" type="text" value="8:00" />
+          </label>
+        </div>
+        <p class="muted">Maximum: 3 minutes (180s)</p>
+      </section>
+
+      <section class="card">
+        <h3>Output</h3>
+        <label class="inline"
+          >Output directory
+          <input id="outputDirInput" type="text" value="out/range-shorts" />
+        </label>
+      </section>
+
+      <section class="card">
+        <button id="createBtn" class="btn btn-primary">Create Range Short</button>
+      </section>
+
+      <section class="card">
+        <h3>Job Console</h3>
+        <div id="jobMeta" class="muted"></div>
+        <pre id="jobLog" class="job-log"></pre>
+      </section>
+
+      <section class="card">
+        <h3>Recent Renders</h3>
+        <div id="history" class="notes-list"></div>
+      </section>
+    </main>
+
+    <script src="./range-short.js"></script>
+  </body>
+</html>

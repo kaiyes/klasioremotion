@@ -117,6 +117,7 @@ function parseArgs(argv) {
     avFailPolicy: "balanced", // balanced | strict
     avTimeoutMs: 45000,
     videoExts: DEFAULT_VIDEO_EXTS,
+    appendEndCard: true,
     verbose: false,
   };
 
@@ -280,6 +281,9 @@ function parseArgs(argv) {
       case "avTimeoutMs":
         args.avTimeoutMs = Number(value);
         takeNext();
+        break;
+      case "noEndCard":
+        args.appendEndCard = false;
         break;
       case "avFailPolicy":
         args.avFailPolicy = String(value || "").trim().toLowerCase();
@@ -497,6 +501,7 @@ Options:
   --avMinVisionSim      Min JP similarity candidate vs vision OCR (default: 0.42)
   --avFailPolicy        AV fail policy: balanced|strict (default: balanced)
   --avTimeoutMs         Timeout per vision request in ms (default: 45000)
+  --noEndCard           Disable appending source_content/card.mp4 or branded end card
   --dryRun              Print planned clips / ffmpeg commands, do not run
   --verbose             More logging
 `;
@@ -4556,68 +4561,70 @@ async function main() {
     console.log("");
     console.log(`Stitched video: ${stitched}`);
 
-    const cardVideoPath = path.resolve("source_content", "card.mp4");
-    const hasCardVideo = fs.existsSync(cardVideoPath);
-    if (hasCardVideo) {
-      const { width, height } = getVideoDimensions(stitched);
-      const tailDurationSec = getMediaDurationSec(cardVideoPath);
-      if (tailDurationSec > 0) {
-        const finalOut = stitched.replace(/\.mp4$/i, "_with_card.mp4");
-        runFfmpegAppendTailVideo({
-          mainInput: stitched,
-          tailInput: cardVideoPath,
-          output: finalOut,
-          width,
-          height,
-          tailDurationSec,
-          verbose: args.verbose,
-        });
-        fs.unlinkSync(stitched);
-        fs.renameSync(finalOut, stitched);
-        console.log(`Appended video end card (source_content/card.mp4) to: ${stitched}`);
-      } else {
-        console.warn(`Skipped source_content/card.mp4 because duration could not be read.`);
-      }
-    } else {
-      const cardPath = path.resolve("source_content", "card.png");
-      const hasCardImage = fs.existsSync(cardPath);
-      if (args.decorate || hasCardImage) {
+    if (args.appendEndCard) {
+      const cardVideoPath = path.resolve("source_content", "card.mp4");
+      const hasCardVideo = fs.existsSync(cardVideoPath);
+      if (hasCardVideo) {
         const { width, height } = getVideoDimensions(stitched);
-        const logoDataUri = loadPngDataUri(path.resolve("source_content", "logo.png"));
-        const cardDataUri = hasCardImage ? loadPngDataUri(cardPath) : "";
-        const qrDataUri = cardDataUri ? "" : await buildQrDataUri("http://bundai.app/", 540);
-        const endSvg = buildEndCardSvg({
-          width,
-          height,
-          logoDataUri,
-          qrDataUri,
-          cardDataUri,
-        });
-        const endHash = crypto.createHash("sha1").update(stitched).digest("hex").slice(0, 10);
-        const endPng = path.join(path.dirname(stitched), `.tmp_endcard_${endHash}.png`);
-        const endMp4 = path.join(path.dirname(stitched), `.tmp_endcard_${endHash}.mp4`);
-        const finalOut = stitched.replace(/\.mp4$/i, "_with_endcard.mp4");
-        renderSvgToPng({ svg: endSvg, output: endPng });
-        runFfmpegStillClip({
-          image: endPng,
-          durationSec: 3,
-          output: endMp4,
-          verbose: args.verbose,
-        });
-        runFfmpegConcat({
-          inputs: [stitched, endMp4],
-          output: finalOut,
-          verbose: args.verbose,
-          listName: `.concat-endcard-${querySlug}.txt`,
-        });
-        fs.unlinkSync(endPng);
-        fs.unlinkSync(endMp4);
-        fs.unlinkSync(stitched);
-        fs.renameSync(finalOut, stitched);
-        if (cardDataUri) {
-          console.log(`Appended image end card (source_content/card.png) to: ${stitched}`);
+        const tailDurationSec = getMediaDurationSec(cardVideoPath);
+        if (tailDurationSec > 0) {
+          const finalOut = stitched.replace(/\.mp4$/i, "_with_card.mp4");
+          runFfmpegAppendTailVideo({
+            mainInput: stitched,
+            tailInput: cardVideoPath,
+            output: finalOut,
+            width,
+            height,
+            tailDurationSec,
+            verbose: args.verbose,
+          });
+          fs.unlinkSync(stitched);
+          fs.renameSync(finalOut, stitched);
+          console.log(`Appended video end card (source_content/card.mp4) to: ${stitched}`);
         } else {
-          console.log(`Appended branded end card to: ${stitched}`);
+          console.warn(`Skipped source_content/card.mp4 because duration could not be read.`);
+        }
+      } else {
+        const cardPath = path.resolve("source_content", "card.png");
+        const hasCardImage = fs.existsSync(cardPath);
+        if (args.decorate || hasCardImage) {
+          const { width, height } = getVideoDimensions(stitched);
+          const logoDataUri = loadPngDataUri(path.resolve("source_content", "logo.png"));
+          const cardDataUri = hasCardImage ? loadPngDataUri(cardPath) : "";
+          const qrDataUri = cardDataUri ? "" : await buildQrDataUri("http://bundai.app/", 540);
+          const endSvg = buildEndCardSvg({
+            width,
+            height,
+            logoDataUri,
+            qrDataUri,
+            cardDataUri,
+          });
+          const endHash = crypto.createHash("sha1").update(stitched).digest("hex").slice(0, 10);
+          const endPng = path.join(path.dirname(stitched), `.tmp_endcard_${endHash}.png`);
+          const endMp4 = path.join(path.dirname(stitched), `.tmp_endcard_${endHash}.mp4`);
+          const finalOut = stitched.replace(/\.mp4$/i, "_with_endcard.mp4");
+          renderSvgToPng({ svg: endSvg, output: endPng });
+          runFfmpegStillClip({
+            image: endPng,
+            durationSec: 3,
+            output: endMp4,
+            verbose: args.verbose,
+          });
+          runFfmpegConcat({
+            inputs: [stitched, endMp4],
+            output: finalOut,
+            verbose: args.verbose,
+            listName: `.concat-endcard-${querySlug}.txt`,
+          });
+          fs.unlinkSync(endPng);
+          fs.unlinkSync(endMp4);
+          fs.unlinkSync(stitched);
+          fs.renameSync(finalOut, stitched);
+          if (cardDataUri) {
+            console.log(`Appended image end card (source_content/card.png) to: ${stitched}`);
+          } else {
+            console.log(`Appended branded end card to: ${stitched}`);
+          }
         }
       }
     }
