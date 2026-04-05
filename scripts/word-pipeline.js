@@ -24,6 +24,7 @@ const DEFAULTS = {
   model: "llama3.2:3b",
   printEvery: 25,
   renderMode: "short", // short | stitched
+  layout: "standard", // standard | instagram
   allowFallbackRender: false,
   allowWeak: false,
   resume: true,
@@ -82,6 +83,7 @@ Options:
   --renderMode <mode>      short|stitched (default: ${DEFAULTS.renderMode})
   --short                  Alias for --renderMode short
   --stitched               Alias for --renderMode stitched
+  --layout <name>          standard|instagram (default: ${DEFAULTS.layout})
   --allowFallbackRender    Allow rendering fallback-ranked words (default: off)
   --allowWeak              Accept weak/trivial LLM rankings (default: off)
   --resume / --no-resume   Default: resume
@@ -255,6 +257,10 @@ function parseArgs(argv) {
         break;
       case "no-allowWeak":
         args.allowWeak = false;
+        break;
+      case "layout":
+        args.layout = String(v || "").trim().toLowerCase();
+        takeNext();
         break;
       case "resume":
         args.resume = true;
@@ -723,6 +729,8 @@ function buildVerticalShortCli(args, outRoot, word, picks, opts = {}) {
     "--longPolicy",
     "shrink",
     "--keepOutputs",
+    "--layout",
+    args.layout,
   ];
   if (opts.candidatesIn) cli.push("--candidatesIn", opts.candidatesIn);
   if (args.enSubsDir) cli.push("--enSubsDir", args.enSubsDir);
@@ -748,6 +756,7 @@ function runShortRenderStage(args, outRoot) {
       profile: args.profile,
       topK: args.topK,
       mode: args.mode,
+      layout: args.layout,
       allowFallbackRender: args.allowFallbackRender,
       scope: args.scope,
     },

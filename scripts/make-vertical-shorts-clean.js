@@ -39,6 +39,8 @@ function parseArgs(argv) {
     width: 1080,
     height: 1920,
     videoTop: 760,
+    layout: "standard",
+    videoTopExplicit: false,
     limit: 5,
     rank: true,
     shuffle: false,
@@ -134,6 +136,11 @@ function parseArgs(argv) {
         break;
       case "videoTop":
         args.videoTop = Number(v);
+        args.videoTopExplicit = true;
+        takeNext();
+        break;
+      case "layout":
+        args.layout = String(v || "").trim().toLowerCase();
         takeNext();
         break;
       case "limit":
@@ -320,6 +327,7 @@ Options:
   --wordList <file>          Word metadata JSON (default: first2000 match file)
   --outDir <dir>             Work output dir (default: out/shorts_work)
   --outputDir <dir>          Final shorts dir (default: out/shorts)
+  --layout <name>            standard|instagram (default: standard)
   --limit <n>                Number of clips (default: 5)
   --mode <line|sentence>     Match mode (default: line)
   --rank                     Rank candidates (default: on)
@@ -694,6 +702,7 @@ function buildSegmentOverlaySvg({
   width,
   height,
   videoTop,
+  layout,
   query,
   queryReading,
   queryMeaning,
@@ -709,39 +718,42 @@ function buildSegmentOverlaySvg({
   const s = height / 1920;
   const fontJP = "Hiragino Sans, Noto Sans CJK JP, Arial";
   const fontEN = "Helvetica Neue, Arial, sans-serif";
+  const isInstagram = layout === "instagram";
   const margin = width * 0.08;
   const videoHeight = (width * 9) / 16;
   const videoBottom = videoTop + videoHeight;
 
-  const headerRectH = 470 * s;
-  const headerRectY = Math.max(48 * s, videoTop - headerRectH - 116 * s);
-  const labelY = headerRectY + 86 * s;
-  const readingY = labelY + 82 * s;
-  const romajiY = readingY + 58 * s;
-  const kanjiY = romajiY + 110 * s;
-  const meaningY = kanjiY + 96 * s;
+  const headerRectH = (isInstagram ? 350 : 470) * s;
+  const headerRectW = width * (isInstagram ? 0.66 : 0.9);
+  const headerRectX = (width - headerRectW) / 2;
+  const headerRectY = Math.max(36 * s, videoTop - headerRectH - (isInstagram ? 36 : 116) * s);
+  const labelY = headerRectY + (isInstagram ? 60 : 86) * s;
+  const readingY = labelY + (isInstagram ? 54 : 82) * s;
+  const romajiY = readingY + (isInstagram ? 44 : 58) * s;
+  const kanjiY = romajiY + (isInstagram ? 78 : 110) * s;
+  const meaningY = kanjiY + (isInstagram ? 74 : 96) * s;
 
-  const subtitleTop = videoBottom + 26 * s;
-  const subtitleBottom = height - 42 * s;
+  const subtitleTop = isInstagram ? videoBottom - 210 * s : videoBottom + 26 * s;
+  const subtitleBottom = isInstagram ? videoBottom - 26 * s : height - 42 * s;
   const maxTextWidth = width - margin * 2;
   const jpRaw = jpTokens.map((t) => t.surface || "").join("");
   const jpUnits = Math.max(1, measureUnits(jpRaw));
-  let jpSize = Math.min(54 * s, maxTextWidth / jpUnits);
-  jpSize = Math.max(30 * s, jpSize);
+  let jpSize = Math.min((isInstagram ? 50 : 54) * s, maxTextWidth / jpUnits);
+  jpSize = Math.max((isInstagram ? 24 : 30) * s, jpSize);
   let furiSize = Math.max(18 * s, jpSize * 0.56);
 
-  const enLines = wrapTextByUnits(enLine || "", 34, 2, "en");
-  const romajiLines = wrapTextByUnits(romajiLine || "", 34, 2, "en");
+  const enLines = wrapTextByUnits(enLine || "", isInstagram ? 30 : 34, 2, "en");
+  const romajiLines = wrapTextByUnits(romajiLine || "", isInstagram ? 30 : 34, 2, "en");
   const enLongestUnits = enLines.reduce((m, line) => Math.max(m, measureUnits(line)), 0);
   const romajiLongestUnits = romajiLines.reduce((m, line) => Math.max(m, measureUnits(line)), 0);
 
-  let enSize = 40 * s;
+  let enSize = (isInstagram ? 28 : 40) * s;
   if (enLongestUnits > 0) enSize = Math.min(enSize, maxTextWidth / enLongestUnits);
-  enSize = Math.max(22 * s, enSize);
+  enSize = Math.max((isInstagram ? 18 : 22) * s, enSize);
 
-  let romajiSize = 34 * s;
+  let romajiSize = (isInstagram ? 24 : 34) * s;
   if (romajiLongestUnits > 0) romajiSize = Math.min(romajiSize, maxTextWidth / romajiLongestUnits);
-  romajiSize = Math.max(20 * s, romajiSize);
+  romajiSize = Math.max((isInstagram ? 16 : 20) * s, romajiSize);
 
   const lh = (size) => size * 1.18;
   const enCount = Math.max(1, enLines.length);
@@ -751,10 +763,10 @@ function buildSegmentOverlaySvg({
     lh(furiSize) +
     lh(jpSize) +
     romajiCount * lh(romajiSize) +
-    24 * s;
+    (isInstagram ? 10 : 24) * s;
   const availableHeight = Math.max(200 * s, subtitleBottom - subtitleTop);
   if (requiredHeight > availableHeight) {
-    const k = Math.max(0.72, availableHeight / requiredHeight);
+    const k = Math.max(isInstagram ? 0.64 : 0.72, availableHeight / requiredHeight);
     enSize *= k;
     jpSize *= k;
     furiSize *= k;
@@ -764,13 +776,13 @@ function buildSegmentOverlaySvg({
       lh(furiSize) +
       lh(jpSize) +
       romajiCount * lh(romajiSize) +
-      24 * s;
+      (isInstagram ? 10 : 24) * s;
   }
 
   const enStartY = subtitleTop + enSize;
-  const furiY = enStartY + enCount * lh(enSize) + 8 * s;
-  const jpY = furiY + Math.max(26 * s, furiSize + 10 * s);
-  const romajiStartY = jpY + Math.max(30 * s, jpSize + 6 * s);
+  const furiY = enStartY + enCount * lh(enSize) + (isInstagram ? 4 : 8) * s;
+  const jpY = furiY + Math.max((isInstagram ? 16 : 26) * s, furiSize + (isInstagram ? 4 : 10) * s);
+  const romajiStartY = jpY + Math.max((isInstagram ? 14 : 30) * s, jpSize + (isInstagram ? 4 : 6) * s);
 
   const jpLayout = layoutTokensCentered(jpTokens, width, maxTextWidth, jpSize);
   const brandW = 356 * s;
@@ -815,7 +827,9 @@ function buildSegmentOverlaySvg({
       return `<text x="50%" y="${y}" text-anchor="middle" font-family="${fontEN}" font-size="${romajiSize}" font-weight="700" fill="#ffffff" stroke="#000000" stroke-width="${2 * s}" paint-order="stroke fill">${lineText}</text>`;
     })
     .join("\n");
-  const brandBlock = `
+  const brandBlock = isInstagram
+    ? ""
+    : `
   <rect x="${brandX}" y="${brandY}" width="${brandW}" height="${brandH}" rx="${14 * s}" ry="${14 * s}" fill="rgba(27,58,48,0.9)" stroke="rgba(198,233,212,0.85)" stroke-width="${2 * s}"/>
   ${logoDataUri ? `<image x="${logoX}" y="${logoY}" width="${logoSize}" height="${logoSize}" href="${logoDataUri}" preserveAspectRatio="xMidYMid meet"/>` : ""}
   ${qrDataUri ? `<image x="${qrX}" y="${qrY}" width="${qrSize}" height="${qrSize}" href="${qrDataUri}" preserveAspectRatio="xMidYMid meet"/>` : ""}
@@ -823,17 +837,23 @@ function buildSegmentOverlaySvg({
   <text x="${brandTitleX}" y="${brandSubY1}" text-anchor="start" font-family="${fontEN}" font-size="${14 * s}" font-weight="700" fill="#d6efe2">Learn Japanese</text>
   <text x="${brandTitleX}" y="${brandSubY2}" text-anchor="start" font-family="${fontEN}" font-size="${14 * s}" font-weight="700" fill="#d6efe2">watching anime</text>
   `;
+  const subtitleBackdrop = isInstagram
+    ? `
+  <rect x="${margin * 0.55}" y="${videoBottom - 250 * s}" width="${width - margin * 1.1}" height="${232 * s}" rx="${24 * s}" ry="${24 * s}" fill="rgba(0,0,0,0.68)"/>
+  `
+    : "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
   <rect width="100%" height="100%" fill="transparent"/>
-  <rect x="${width * 0.05}" y="${headerRectY}" width="${width * 0.9}" height="${headerRectH}" rx="${24 * s}" ry="${24 * s}" fill="rgba(198,233,212,0.92)"/>
-  <text x="50%" y="${labelY}" text-anchor="middle" font-family="${fontEN}" font-size="${42 * s}" font-weight="800" fill="#1e3a34">Anime word of the day</text>
-  <text x="50%" y="${readingY}" text-anchor="middle" font-family="${fontJP}" font-size="${54 * s}" font-weight="700" fill="#1e3a34">${svgEscape(queryReading)}</text>
-  <text x="50%" y="${romajiY}" text-anchor="middle" font-family="${fontEN}" font-size="${32 * s}" font-weight="700" fill="#1e3a34">${svgEscape(queryRomaji)}</text>
-  <text x="50%" y="${kanjiY}" text-anchor="middle" font-family="${fontJP}" font-size="${126 * s}" font-weight="800" fill="#ffd900" stroke="#000000" stroke-width="${4 * s}" paint-order="stroke fill">${svgEscape(query)}</text>
-  <text x="50%" y="${meaningY}" text-anchor="middle" font-family="${fontEN}" font-size="${48 * s}" font-weight="800" fill="#1e3a34">${svgEscape(queryMeaning || "Japanese in context")}</text>
+  <rect x="${headerRectX}" y="${headerRectY}" width="${headerRectW}" height="${headerRectH}" rx="${24 * s}" ry="${24 * s}" fill="rgba(198,233,212,0.92)"/>
+  <text x="50%" y="${labelY}" text-anchor="middle" font-family="${fontEN}" font-size="${(isInstagram ? 28 : 42) * s}" font-weight="800" fill="#1e3a34">Anime word of the day</text>
+  <text x="50%" y="${readingY}" text-anchor="middle" font-family="${fontJP}" font-size="${(isInstagram ? 42 : 54) * s}" font-weight="700" fill="#1e3a34">${svgEscape(queryReading)}</text>
+  <text x="50%" y="${romajiY}" text-anchor="middle" font-family="${fontEN}" font-size="${(isInstagram ? 24 : 32) * s}" font-weight="700" fill="#1e3a34">${svgEscape(queryRomaji)}</text>
+  <text x="50%" y="${kanjiY}" text-anchor="middle" font-family="${fontJP}" font-size="${(isInstagram ? 96 : 126) * s}" font-weight="800" fill="#ffd900" stroke="#000000" stroke-width="${4 * s}" paint-order="stroke fill">${svgEscape(query)}</text>
+  <text x="50%" y="${meaningY}" text-anchor="middle" font-family="${fontEN}" font-size="${(isInstagram ? 34 : 48) * s}" font-weight="800" fill="#1e3a34">${svgEscape(queryMeaning || "Japanese in context")}</text>
   ${brandBlock}
+  ${subtitleBackdrop}
   ${enText}
   ${furiText}
   ${jpText}
@@ -983,6 +1003,12 @@ async function main() {
     throw new Error(
       `Required: --query --subsDir [--videosDir]. Default videos dir: ${DEFAULT_VIDEOS_DIR}`,
     );
+  }
+  if (!["standard", "instagram"].includes(args.layout)) {
+    throw new Error(`Invalid --layout "${args.layout}". Expected standard or instagram.`);
+  }
+  if (!args.videoTopExplicit && args.layout === "instagram") {
+    args.videoTop = 610;
   }
   if (!["anywhere", "middle"].includes(args.wordPlacement)) {
     throw new Error('--wordPlacement must be "anywhere" or "middle".');
@@ -1174,6 +1200,7 @@ async function main() {
       width: args.width,
       height: args.height,
       videoTop: args.videoTop,
+      layout: args.layout,
       query: displayWord,
       queryReading,
       queryMeaning,

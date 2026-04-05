@@ -20,4 +20,8 @@ dissfiles
 source_content/*
 !source_content/logo.png
 
+# Explicitly keep Jujutsu Kaisen source assets out of Git.
+source_content/jujutsu_kaisen/
+source_content/jujutsu_kaisen_original_ass/
+
 public/auto-short/videos/*.mp4
