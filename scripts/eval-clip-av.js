@@ -5,6 +5,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
+function defaultLlamaCliBin() {
+  const preferred = "/home/kaiyes/.openclaw/vendor/llama.cpp-shallow/build-vulkan/bin/llama-cli";
+  return fs.existsSync(preferred) ? preferred : "llama-cli";
+}
+
 function parseArgs(argv) {
   const args = {
     clip: "",
@@ -15,8 +20,14 @@ function parseArgs(argv) {
     candidateEn: "",
     whisperModel: String(process.env.AV_WHISPER_MODEL || "small").trim(),
     whisperLanguage: String(process.env.AV_WHISPER_LANGUAGE || "Japanese").trim(),
+    visionBackend: String(process.env.AV_VISION_BACKEND || "ollama").trim().toLowerCase(),
     visionModel: String(process.env.AV_VISION_MODEL || "qwen3-vl:8b").trim(),
     ollamaHost: String(process.env.OLLAMA_HOST || "http://127.0.0.1:11434").trim(),
+    llamaCliBin: String(process.env.AV_LLAMA_CLI_BIN || defaultLlamaCliBin()).trim(),
+    visionMmproj: String(process.env.AV_VISION_MMPROJ || "").trim(),
+    llamaDevice: String(process.env.AV_LLAMA_DEVICE || "").trim(),
+    llamaCtxSize: Number(process.env.AV_LLAMA_CTX_SIZE || 4096),
+    llamaGpuLayers: Number(process.env.AV_LLAMA_GPU_LAYERS || 99),
     visionTimeoutMs: 90000,
     frames: 3,
     outDir: "",
@@ -64,12 +75,36 @@ function parseArgs(argv) {
         args.whisperLanguage = String(v || "").trim();
         take();
         break;
+      case "visionBackend":
+        args.visionBackend = String(v || "").trim().toLowerCase();
+        take();
+        break;
       case "visionModel":
         args.visionModel = String(v || "").trim();
         take();
         break;
       case "ollamaHost":
         args.ollamaHost = String(v || "").trim();
+        take();
+        break;
+      case "llamaCliBin":
+        args.llamaCliBin = String(v || "").trim();
+        take();
+        break;
+      case "visionMmproj":
+        args.visionMmproj = String(v || "").trim();
+        take();
+        break;
+      case "llamaDevice":
+        args.llamaDevice = String(v || "").trim();
+        take();
+        break;
+      case "llamaCtxSize":
+        args.llamaCtxSize = Number(v);
+        take();
+        break;
+      case "llamaGpuLayers":
+        args.llamaGpuLayers = Number(v);
         take();
         break;
       case "visionTimeoutMs":
@@ -112,8 +147,14 @@ Options:
   --candidateEn <text>     Candidate EN subtitle text
   --whisperModel <m>       Whisper model (default: small)
   --whisperLanguage <l>    Whisper language (default: Japanese)
-  --visionModel <m>        Vision model via Ollama (default: qwen3-vl:8b)
+  --visionBackend <b>      Vision backend: ollama|llamacpp (default: ollama)
+  --visionModel <m>        Vision model: Ollama model name or llama.cpp GGUF path
   --ollamaHost <url>       Ollama host (default: http://127.0.0.1:11434)
+  --llamaCliBin <path>     llama.cpp CLI binary for --visionBackend llamacpp
+  --visionMmproj <path>    mmproj GGUF for --visionBackend llamacpp
+  --llamaDevice <name>     llama.cpp device, e.g. Vulkan0
+  --llamaCtxSize <n>       llama.cpp context size (default: 4096)
+  --llamaGpuLayers <n>     llama.cpp GPU layers (default: 99)
   --visionTimeoutMs <ms>   Per-frame vision timeout (default: 90000)
   --frames <n>             Number of frames sampled across clip (default: 3)
   --outDir <dir>           Eval output directory (default: <clipDir>/eval_out)
@@ -244,26 +285,55 @@ function extractFrames(clip, durationSec, count, outDir) {
   return frames;
 }
 
+function defaultWhisperCliBin() {
+  const preferred = "/home/kaiyes/projects/whisper.cpp/build/bin/whisper-cli";
+  return fs.existsSync(preferred) ? preferred : "whisper";
+}
+
+function resolveWhisperCppModel(model) {
+  const raw = String(model || "").trim();
+  const home = process.env.HOME || "";
+  if (!raw) {
+    const preferred = "/home/kaiyes/projects/whisper.cpp/models/ggml-base.bin";
+    return fs.existsSync(preferred) ? preferred : "ggml-base.bin";
+  }
+  if (fs.existsSync(raw)) return raw;
+  const candidates = [
+    path.join(home, "projects", "whisper.cpp", "models", raw),
+    path.join(home, "projects", "whisper.cpp", "models", `ggml-${raw}.bin`),
+    path.join(home, "snap", "whisper-cpp", "common", ".local", "share", "whisper-cpp", raw),
+    path.join(home, "snap", "whisper-cpp", "common", ".local", "share", "whisper-cpp", `ggml-${raw}.bin`),
+    path.join(home, ".openclaw", "vendor", "whisper.cpp-shallow", "models", raw),
+    path.join(home, ".openclaw", "vendor", "whisper.cpp-shallow", "models", `ggml-${raw}.bin`),
+  ];
+  for (const file of candidates) {
+    if (fs.existsSync(file)) return file;
+  }
+  return raw;
+}
+
 function runWhisper(wav, model, language, outDir) {
-  const res = run("whisper", [
+  const resolved = resolveWhisperCppModel(model);
+  const outBase = path.join(outDir, path.basename(wav, path.extname(wav)));
+  const args = [
+    "-m",
+    resolved,
+    "-l",
+    String(language || "ja").toLowerCase().startsWith("j") ? "ja" : String(language || "auto"),
+    "-oj",
+    "-of",
+    outBase,
+    "-f",
     wav,
-    "--model",
-    model,
-    "--language",
-    language,
-    "--task",
-    "transcribe",
-    "--word_timestamps",
-    "False",
-    "--output_format",
-    "json",
-    "--output_dir",
-    outDir,
-  ]);
-  const jsonFile = path.join(outDir, `${path.basename(wav, path.extname(wav))}.json`);
+  ];
+  const res = run(defaultWhisperCliBin(), args);
+  const jsonFile = `${outBase}.json`;
   if (res.status !== 0 || !fs.existsSync(jsonFile)) return { ok: false, text: "" };
   const parsed = JSON.parse(fs.readFileSync(jsonFile, "utf8"));
-  return { ok: true, text: String(parsed.text || "").trim() };
+  const text = Array.isArray(parsed.transcription)
+    ? parsed.transcription.map((x) => String(x?.text || "").trim()).filter(Boolean).join(" ").trim()
+    : "";
+  return { ok: Boolean(text), text };
 }
 
 async function runVisionFrame({ frame, model, host, timeoutMs, prompt }) {
@@ -294,6 +364,73 @@ async function runVisionFrame({ frame, model, host, timeoutMs, prompt }) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function runVisionFrameLlamaCpp({
+  frame,
+  model,
+  mmproj,
+  cliBin,
+  device,
+  ctxSize,
+  gpuLayers,
+  timeoutMs,
+  prompt,
+}) {
+  const bin = String(cliBin || "").trim();
+  const modelPath = String(model || "").trim();
+  const mmprojPath = String(mmproj || "").trim();
+  if (!bin || !fs.existsSync(bin)) {
+    return { ok: false, error: "llamacpp_bin_missing", raw: "" };
+  }
+  if (!modelPath || !fs.existsSync(modelPath)) {
+    return { ok: false, error: "llamacpp_model_missing", raw: "" };
+  }
+  if (!mmprojPath || !fs.existsSync(mmprojPath)) {
+    return { ok: false, error: "llamacpp_mmproj_missing", raw: "" };
+  }
+  const args = [
+    "--model",
+    modelPath,
+    "--mmproj",
+    mmprojPath,
+    "--image",
+    frame,
+    "--simple-io",
+    "--no-display-prompt",
+    "--single-turn",
+    "--prompt",
+    prompt,
+    "--ctx-size",
+    String(Math.max(1024, Number(ctxSize) || 4096)),
+    "--n-predict",
+    "160",
+    "--log-disable",
+  ];
+  if (device) args.push("--device", device);
+  if (Number.isFinite(Number(gpuLayers))) {
+    args.push("--n-gpu-layers", String(Math.max(0, Number(gpuLayers))));
+  }
+  const res = spawnSync(bin, args, {
+    encoding: "utf8",
+    timeout: Math.max(1000, Number(timeoutMs) || 90000),
+  });
+  if (res.error) {
+    return { ok: false, error: String(res.error.message || "llamacpp_failed"), raw: String(res.stdout || "") };
+  }
+  if (res.signal === "SIGTERM" || res.signal === "SIGKILL") {
+    return { ok: false, error: "llamacpp_timeout", raw: String(res.stdout || "") };
+  }
+  const raw = String(res.stdout || "").trim();
+  if (res.status !== 0) {
+    return {
+      ok: false,
+      error: `llamacpp_exit_${res.status}`,
+      raw: [raw, String(res.stderr || "").trim()].filter(Boolean).join("\n"),
+    };
+  }
+  const parsed = parseVision(raw);
+  return { ok: parsed.ok, error: parsed.ok ? "" : "parse_failed", raw, parsed };
 }
 
 function uniqJoin(values) {
@@ -340,13 +477,26 @@ async function main() {
   const perFrame = [];
   for (const frame of frames) {
     // eslint-disable-next-line no-await-in-loop
-    const r = await runVisionFrame({
-      frame,
-      model: args.visionModel,
-      host: args.ollamaHost,
-      timeoutMs: args.visionTimeoutMs,
-      prompt,
-    });
+    const r =
+      args.visionBackend === "llamacpp"
+        ? await runVisionFrameLlamaCpp({
+            frame,
+            model: args.visionModel,
+            mmproj: args.visionMmproj,
+            cliBin: args.llamaCliBin,
+            device: args.llamaDevice,
+            ctxSize: args.llamaCtxSize,
+            gpuLayers: args.llamaGpuLayers,
+            timeoutMs: args.visionTimeoutMs,
+            prompt,
+          })
+        : await runVisionFrame({
+            frame,
+            model: args.visionModel,
+            host: args.ollamaHost,
+            timeoutMs: args.visionTimeoutMs,
+            prompt,
+          });
     perFrame.push({ frame, ...r });
   }
 
@@ -392,7 +542,9 @@ async function main() {
       text: asr.text || "",
     },
     vision: {
+      backend: args.visionBackend,
       model: args.visionModel,
+      mmproj: args.visionBackend === "llamacpp" ? args.visionMmproj : "",
       frameCount: frames.length,
       okFrameCount: okFrames.length,
       merged,
@@ -428,4 +580,3 @@ main().catch((err) => {
   console.error(err?.stack || err?.message || String(err));
   process.exit(1);
 });
-

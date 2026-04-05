@@ -26,6 +26,11 @@ const DEFAULT_EN_SUBS_DIR = fs.existsSync(DEFAULT_EN_SUBS_DIR_EMBEDDED)
   : DEFAULT_EN_SUBS_DIR_LEGACY;
 const DEFAULT_FAMILY_MEANINGS_FILE = path.join("source_content", "family-meanings.json");
 
+function defaultAvWhisperModel() {
+  const preferred = "/home/kaiyes/projects/whisper.cpp/models/ggml-base.bin";
+  return fs.existsSync(preferred) ? preferred : "ggml-base.bin";
+}
+
 function parseArgs(argv) {
   const args = {
     query: null,
@@ -62,14 +67,21 @@ function parseArgs(argv) {
     romaji: null,
     familyMeaningsFile: DEFAULT_FAMILY_MEANINGS_FILE,
     avEval: false,
-    avWhisperModel: String(process.env.AV_WHISPER_MODEL || "medium").trim(),
+    avWhisperModel: String(process.env.AV_WHISPER_MODEL || defaultAvWhisperModel()).trim(),
     avWhisperLanguage: String(process.env.AV_WHISPER_LANGUAGE || "Japanese").trim(),
+    avVisionBackend: String(process.env.AV_VISION_BACKEND || "ollama").trim().toLowerCase(),
     avVisionModel: String(process.env.AV_VISION_MODEL || "").trim(),
     avOllamaHost: String(process.env.OLLAMA_HOST || "http://127.0.0.1:11434").trim(),
-    avQueryOnly: true,
+    avLlamaCliBin: String(process.env.AV_LLAMA_CLI_BIN || "").trim(),
+    avVisionMmproj: String(process.env.AV_VISION_MMPROJ || "").trim(),
+    avLlamaDevice: String(process.env.AV_LLAMA_DEVICE || "").trim(),
+    avLlamaCtxSize: Number(process.env.AV_LLAMA_CTX_SIZE || 4096),
+    avLlamaGpuLayers: Number(process.env.AV_LLAMA_GPU_LAYERS || 99),
+    avQueryOnly: false,
     avMaxSwapCandidates: 12,
-    avMinAsrSim: 0.5,
+    avMinAsrSim: 0.62,
     avMinVisionSim: 0.42,
+    avFailPolicy: "strict",
     avTimeoutMs: 45000,
     mode: "line",
     tailRepeat: 1,
@@ -241,12 +253,36 @@ function parseArgs(argv) {
         args.avWhisperLanguage = String(v || "").trim();
         takeNext();
         break;
+      case "avVisionBackend":
+        args.avVisionBackend = String(v || "").trim().toLowerCase();
+        takeNext();
+        break;
       case "avVisionModel":
         args.avVisionModel = String(v || "").trim();
         takeNext();
         break;
       case "avOllamaHost":
         args.avOllamaHost = String(v || "").trim();
+        takeNext();
+        break;
+      case "avLlamaCliBin":
+        args.avLlamaCliBin = String(v || "").trim();
+        takeNext();
+        break;
+      case "avVisionMmproj":
+        args.avVisionMmproj = String(v || "").trim();
+        takeNext();
+        break;
+      case "avLlamaDevice":
+        args.avLlamaDevice = String(v || "").trim();
+        takeNext();
+        break;
+      case "avLlamaCtxSize":
+        args.avLlamaCtxSize = Number(v);
+        takeNext();
+        break;
+      case "avLlamaGpuLayers":
+        args.avLlamaGpuLayers = Number(v);
         takeNext();
         break;
       case "avQueryOnly":
@@ -265,6 +301,10 @@ function parseArgs(argv) {
         break;
       case "avMinVisionSim":
         args.avMinVisionSim = Number(v);
+        takeNext();
+        break;
+      case "avFailPolicy":
+        args.avFailPolicy = String(v || "").trim().toLowerCase();
         takeNext();
         break;
       case "avTimeoutMs":
@@ -346,13 +386,20 @@ Options:
   --avEval                   Enable AV eval gate (Whisper + optional vision)
   --avWhisperModel <m>       Whisper model for AV eval (default: medium)
   --avWhisperLanguage <l>    Whisper language (default: Japanese)
-  --avVisionModel <m>        Ollama vision model, e.g. qwen3-vl:8b
+  --avVisionBackend <b>      Vision backend: ollama|llamacpp (default: ollama)
+  --avVisionModel <m>        Vision model: Ollama model name or llama.cpp GGUF path
   --avOllamaHost <url>       Ollama host (default: http://127.0.0.1:11434)
-  --avQueryOnly              AV mode: require target-word presence in Whisper audio (default)
-  --noAvQueryOnly            Also enforce JP similarity vs Whisper
+  --avLlamaCliBin <path>     llama.cpp CLI binary for vision eval
+  --avVisionMmproj <path>    mmproj GGUF for llama.cpp vision eval
+  --avLlamaDevice <name>     llama.cpp device, e.g. Vulkan0
+  --avLlamaCtxSize <n>       llama.cpp context size (default: 4096)
+  --avLlamaGpuLayers <n>     llama.cpp GPU layers (default: 99)
+  --avQueryOnly              AV mode: require target-word presence in Whisper audio only
+  --noAvQueryOnly            Also enforce JP similarity vs Whisper (default)
   --avMaxSwapCandidates <n>  Max AV candidate checks while replacing one bad slot (default: 12)
-  --avMinAsrSim <n>          Min JP similarity vs Whisper (default: 0.5)
+  --avMinAsrSim <n>          Min JP similarity vs Whisper (default: 0.62)
   --avMinVisionSim <n>       Min JP similarity vs vision OCR (default: 0.42)
+  --avFailPolicy <mode>      AV fail policy: balanced|strict (default: strict)
   --avTimeoutMs <n>          Vision timeout per clip in ms (default: 45000)
   --meaning <text>           Override meaning shown on top card
   --reading <text>           Override reading (hiragana) shown on top card
@@ -1071,14 +1118,25 @@ async function main() {
   if (args.avEval) extractArgs.push("--avEval");
   if (args.avWhisperModel) extractArgs.push("--avWhisperModel", args.avWhisperModel);
   if (args.avWhisperLanguage) extractArgs.push("--avWhisperLanguage", args.avWhisperLanguage);
+  if (args.avVisionBackend) extractArgs.push("--avVisionBackend", args.avVisionBackend);
   if (args.avVisionModel) extractArgs.push("--avVisionModel", args.avVisionModel);
   if (args.avOllamaHost) extractArgs.push("--avOllamaHost", args.avOllamaHost);
-  if (args.avQueryOnly) extractArgs.push("--avQueryOnly");
+  if (args.avLlamaCliBin) extractArgs.push("--avLlamaCliBin", args.avLlamaCliBin);
+  if (args.avVisionMmproj) extractArgs.push("--avVisionMmproj", args.avVisionMmproj);
+  if (args.avLlamaDevice) extractArgs.push("--avLlamaDevice", args.avLlamaDevice);
+  if (Number.isFinite(args.avLlamaCtxSize)) extractArgs.push("--avLlamaCtxSize", String(args.avLlamaCtxSize));
+  if (Number.isFinite(args.avLlamaGpuLayers)) extractArgs.push("--avLlamaGpuLayers", String(args.avLlamaGpuLayers));
+  if (args.avQueryOnly) {
+    extractArgs.push("--avQueryOnly");
+  } else {
+    extractArgs.push("--noAvQueryOnly");
+  }
   if (Number.isFinite(args.avMaxSwapCandidates)) {
     extractArgs.push("--avMaxSwapCandidates", String(args.avMaxSwapCandidates));
   }
   if (Number.isFinite(args.avMinAsrSim)) extractArgs.push("--avMinAsrSim", String(args.avMinAsrSim));
   if (Number.isFinite(args.avMinVisionSim)) extractArgs.push("--avMinVisionSim", String(args.avMinVisionSim));
+  if (args.avFailPolicy) extractArgs.push("--avFailPolicy", String(args.avFailPolicy));
   if (Number.isFinite(args.avTimeoutMs)) extractArgs.push("--avTimeoutMs", String(args.avTimeoutMs));
   if (args.verbose) extractArgs.push("--verbose");
 

@@ -15,11 +15,14 @@ const FALLBACK_WORDS_FILE = path.join(
 
 function parseArgs(argv) {
   const args = {
-    videosDir: path.join(process.cwd(), "out", "shorts"),
+    videosDir: process.cwd(),
     wordsFile: null,
     fallbackWordsFile: null,
     dryRun: false,
     padWidth: 3,
+    includeFamily: false,
+    preferBase: false,
+    maxWordIndex: 0,
   };
 
   for (let i = 2; i < argv.length; i++) {
@@ -51,6 +54,16 @@ function parseArgs(argv) {
         args.padWidth = Number(v || 3);
         takeNext();
         break;
+      case "includeFamily":
+        args.includeFamily = true;
+        break;
+      case "preferBase":
+        args.preferBase = true;
+        break;
+      case "maxWordIndex":
+        args.maxWordIndex = Number(v || 0);
+        takeNext();
+        break;
       case "help":
       case "h":
         printHelpAndExit(0);
@@ -79,11 +92,15 @@ Options:
   --fallbackWordsFile <file> Fallback word list JSON (default: auto-detected fallback)
   --dryRun                   Show what would be renamed without actually renaming
   --padWidth <n>             Number of digits for padding (default: 3 = 001, 002)
+  --includeFamily            Also match family/conjugation forms from match.forms
+  --preferBase              When word matches both base AND form, prefer base word's number
+  --maxWordIndex <n>        Maximum word index to use (default: 0 = no limit). Family forms of words beyond this will be assigned to nearest base within range
   --help                     Show this help
 
 Example:
   node number-videos-by-json-index.js --videosDir . --dryRun
   node number-videos-by-json-index.js --videosDir . --padWidth 4
+  node number-videos-by-json-index.js --videosDir . --includeFamily
 `.trim() + "\n",
   );
   process.exit(code);
@@ -120,7 +137,7 @@ function parseVideoFilename(fileName) {
   let number = null;
   let rest = stem;
 
-  const numbered = stem.match(/^(\d+)_/u);
+  const numbered = stem.match(/^(\d+(?:\.\d+)?)_/u);
   if (numbered) {
     number = Number(numbered[1]);
     rest = stem.slice(numbered[0].length);
@@ -167,9 +184,23 @@ function main() {
   }
 
   const words = normalizeWordsPayload(readJson(wordsFileToUse), wordsFileToUse);
+
   const byWord = new Map(
     words.map((item) => [String(item.word || "").trim(), item]),
   );
+
+  let formToBaseWord = new Map();
+  if (args.includeFamily) {
+    for (const wordObj of words) {
+      const baseWord = String(wordObj.word || "").trim();
+      const forms = wordObj.match?.forms || [];
+      for (const form of forms) {
+        if (!formToBaseWord.has(form)) {
+          formToBaseWord.set(form, baseWord);
+        }
+      }
+    }
+  }
 
   const videoFiles = fs
     .readdirSync(args.videosDir)
@@ -178,6 +209,8 @@ function main() {
   const renamed = [];
   const skipped = [];
   const errors = [];
+
+  const usedFamilyIndices = new Map();
 
   for (const videoFile of videoFiles) {
     const { number, word } = parseVideoFilename(videoFile);
@@ -188,7 +221,97 @@ function main() {
       });
       continue;
     }
-    const entry = byWord.get(word);
+
+    let entry = byWord.get(word);
+    let baseWord = word;
+    let familyIndex = null;
+
+    const matchedBase = formToBaseWord.get(word);
+    let wordIndex = entry ? words.findIndex((item) => item === entry) : -1;
+    const isFormOfOtherWord = matchedBase && matchedBase !== word;
+
+    if (args.preferBase && isFormOfOtherWord) {
+      const baseEntry = byWord.get(matchedBase);
+      if (baseEntry) {
+        const baseIndex = words.findIndex((item) => item === baseEntry);
+        const baseNum = baseIndex + 1;
+
+        if (baseIndex >= 0 && baseNum <= args.maxWordIndex) {
+          entry = baseEntry;
+          baseWord = matchedBase;
+          wordIndex = baseIndex;
+          if (!usedFamilyIndices.has(baseWord)) {
+            usedFamilyIndices.set(baseWord, 1);
+          } else {
+            usedFamilyIndices.set(
+              baseWord,
+              usedFamilyIndices.get(baseWord) + 1,
+            );
+          }
+          familyIndex = usedFamilyIndices.get(baseWord);
+        }
+      }
+    } else if (
+      args.maxWordIndex > 0 &&
+      wordIndex >= 0 &&
+      wordIndex + 1 > args.maxWordIndex
+    ) {
+      if (isFormOfOtherWord) {
+        const baseEntry = byWord.get(matchedBase);
+        if (baseEntry) {
+          const baseIndex = words.findIndex((item) => item === baseEntry);
+          const baseNum = baseIndex + 1;
+          if (baseIndex >= 0 && baseNum <= args.maxWordIndex) {
+            entry = baseEntry;
+            baseWord = matchedBase;
+            wordIndex = baseIndex;
+            if (!usedFamilyIndices.has(baseWord)) {
+              usedFamilyIndices.set(baseWord, 1);
+            } else {
+              usedFamilyIndices.set(
+                baseWord,
+                usedFamilyIndices.get(baseWord) + 1,
+              );
+            }
+            familyIndex = usedFamilyIndices.get(baseWord);
+          }
+        }
+      }
+      if (!entry || wordIndex < 0 || wordIndex + 1 > args.maxWordIndex) {
+        skipped.push({
+          videoFile,
+          word,
+          wordIndex: wordIndex + 1,
+          reason: `Word index ${wordIndex + 1} exceeds maxWordIndex ${args.maxWordIndex}.`,
+        });
+        continue;
+      }
+    }
+
+    if (!entry) {
+      entry = byWord.get(matchedBase);
+      baseWord = matchedBase;
+      if (entry) {
+        if (!usedFamilyIndices.has(baseWord)) {
+          usedFamilyIndices.set(baseWord, 1);
+        } else {
+          usedFamilyIndices.set(baseWord, usedFamilyIndices.get(baseWord) + 1);
+        }
+        familyIndex = usedFamilyIndices.get(baseWord);
+      }
+    } else if (!entry && args.includeFamily && matchedBase) {
+      entry = byWord.get(matchedBase);
+      baseWord = matchedBase;
+      if (entry) {
+        if (!usedFamilyIndices.has(baseWord)) {
+          usedFamilyIndices.set(baseWord, 1);
+        } else {
+          usedFamilyIndices.set(baseWord, usedFamilyIndices.get(baseWord) + 1);
+        }
+        familyIndex = usedFamilyIndices.get(baseWord);
+      }
+    }
+
     if (!entry) {
       skipped.push({
         videoFile,
@@ -198,7 +321,6 @@ function main() {
       continue;
     }
 
-    const wordIndex = words.findIndex((item) => item === entry);
     if (wordIndex < 0) {
       skipped.push({
         videoFile,
@@ -209,20 +331,51 @@ function main() {
     }
 
     const newNumber = wordIndex + 1;
+    let displayNumber = newNumber;
+    let actualBaseNumber = newNumber;
+
+    if (args.maxWordIndex > 0 && newNumber > args.maxWordIndex) {
+      const matchedBase = formToBaseWord.get(word);
+      if (matchedBase && matchedBase !== word) {
+        const baseEntry = byWord.get(matchedBase);
+        if (baseEntry) {
+          const baseWordIndex = words.findIndex((item) => item === baseEntry);
+          if (baseWordIndex >= 0 && baseWordIndex + 1 <= args.maxWordIndex) {
+            entry = baseEntry;
+            baseWord = matchedBase;
+            actualBaseNumber = baseWordIndex + 1;
+            if (!usedFamilyIndices.has(baseWord)) {
+              usedFamilyIndices.set(baseWord, 1);
+            } else {
+              usedFamilyIndices.set(
+                baseWord,
+                usedFamilyIndices.get(baseWord) + 1,
+              );
+            }
+            familyIndex = usedFamilyIndices.get(baseWord);
+            displayNumber = parseFloat(`${actualBaseNumber}.${familyIndex}`);
+          }
+        }
+      }
+    } else if (familyIndex !== null) {
+      displayNumber = parseFloat(`${newNumber}.${familyIndex}`);
+    }
 
     if (Number.isFinite(number)) {
       skipped.push({
         videoFile,
         word,
         currentNumber: number,
-        newNumber,
+        newNumber: displayNumber,
         reason: `Already numbered as ${number}.`,
       });
       continue;
     }
 
     const ext = path.extname(videoFile);
-    const newFilename = `${padNumber(newNumber, args.padWidth)}_${videoFile}`;
+    const paddedBase = padNumber(actualBaseNumber, args.padWidth);
+    const familySuffix = familyIndex !== null ? `.${familyIndex}` : "";
+    const newFilename = `${paddedBase}${familySuffix}_${videoFile}`;
     const oldPath = path.join(args.videosDir, videoFile);
     const newPath = path.join(args.videosDir, newFilename);
 
@@ -231,7 +384,7 @@ function main() {
         videoFile,
         newFilename,
         word,
-        number: newNumber,
+        number: displayNumber,
         action: "DRY RUN",
       });
     } else {
@@ -241,7 +394,7 @@ function main() {
           videoFile,
           newFilename,
           word,
-          number: newNumber,
+          number: displayNumber,
           action: "RENAMED",
         });
       } catch (err) {
@@ -249,7 +402,7 @@ function main() {
           videoFile,
           newFilename,
           word,
-          number: newNumber,
+          number: displayNumber,
           error: err.message,
         });
       }
@@ -291,6 +444,11 @@ function main() {
   }
 
   console.log(`\nWords source: ${wordsFileToUse}`);
+  console.log(`Family forms enabled: ${args.includeFamily}`);
+  console.log(`Prefer base word: ${args.preferBase}`);
+  console.log(
+    `Max word index: ${args.maxWordIndex > 0 ? args.maxWordIndex : "no limit"}`,
+  );
   if (args.dryRun) {
     console.log("(DRY RUN mode - no files were actually renamed)");
   }

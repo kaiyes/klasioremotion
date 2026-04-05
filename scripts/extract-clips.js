@@ -49,6 +49,21 @@ const DEFAULT_WORD_LIST_FILE = path.join(
 
 const DEFAULT_VIDEO_EXTS = [".mkv", ".mp4", ".webm", ".mov"];
 
+function defaultLlamaCliBin() {
+  const preferred = "/home/kaiyes/.openclaw/vendor/llama.cpp-shallow/build-vulkan/bin/llama-cli";
+  return fs.existsSync(preferred) ? preferred : "llama-cli";
+}
+
+function defaultWhisperCliBin() {
+  const preferred = "/home/kaiyes/projects/whisper.cpp/build/bin/whisper-cli";
+  return fs.existsSync(preferred) ? preferred : "whisper";
+}
+
+function defaultAvWhisperModel() {
+  const preferred = "/home/kaiyes/projects/whisper.cpp/models/ggml-base.bin";
+  return fs.existsSync(preferred) ? preferred : "ggml-base.bin";
+}
+
 function parseArgs(argv) {
   const args = {
     query: null,
@@ -106,10 +121,16 @@ function parseArgs(argv) {
     maxEnCps: 20,
     enPolishModel: String(process.env.EN_POLISH_MODEL || "").trim(),
     avEval: false,
-    avWhisperModel: String(process.env.AV_WHISPER_MODEL || "medium").trim(),
+    avWhisperModel: String(process.env.AV_WHISPER_MODEL || defaultAvWhisperModel()).trim(),
     avWhisperLanguage: String(process.env.AV_WHISPER_LANGUAGE || "Japanese").trim(),
+    avVisionBackend: String(process.env.AV_VISION_BACKEND || "ollama").trim().toLowerCase(),
     avVisionModel: String(process.env.AV_VISION_MODEL || "").trim(),
     avOllamaHost: String(process.env.OLLAMA_HOST || "http://127.0.0.1:11434").trim(),
+    avLlamaCliBin: String(process.env.AV_LLAMA_CLI_BIN || defaultLlamaCliBin()).trim(),
+    avVisionMmproj: String(process.env.AV_VISION_MMPROJ || "").trim(),
+    avLlamaDevice: String(process.env.AV_LLAMA_DEVICE || "").trim(),
+    avLlamaCtxSize: Number(process.env.AV_LLAMA_CTX_SIZE || 4096),
+    avLlamaGpuLayers: Number(process.env.AV_LLAMA_GPU_LAYERS || 99),
     avQueryOnly: true,
     avMaxSwapCandidates: 12,
     avMinAsrSim: 0.5,
@@ -252,12 +273,36 @@ function parseArgs(argv) {
         args.avWhisperLanguage = String(value || "").trim();
         takeNext();
         break;
+      case "avVisionBackend":
+        args.avVisionBackend = String(value || "").trim().toLowerCase();
+        takeNext();
+        break;
       case "avVisionModel":
         args.avVisionModel = String(value || "").trim();
         takeNext();
         break;
       case "avOllamaHost":
         args.avOllamaHost = String(value || "").trim();
+        takeNext();
+        break;
+      case "avLlamaCliBin":
+        args.avLlamaCliBin = String(value || "").trim();
+        takeNext();
+        break;
+      case "avVisionMmproj":
+        args.avVisionMmproj = String(value || "").trim();
+        takeNext();
+        break;
+      case "avLlamaDevice":
+        args.avLlamaDevice = String(value || "").trim();
+        takeNext();
+        break;
+      case "avLlamaCtxSize":
+        args.avLlamaCtxSize = Number(value);
+        takeNext();
+        break;
+      case "avLlamaGpuLayers":
+        args.avLlamaGpuLayers = Number(value);
         takeNext();
         break;
       case "avQueryOnly":
@@ -492,8 +537,14 @@ Options:
   --avEval              Enable AV evaluator (Whisper + optional vision)
   --avWhisperModel      Whisper model for AV evaluator (default: medium)
   --avWhisperLanguage   Whisper language for AV evaluator (default: Japanese)
-  --avVisionModel       Optional Ollama vision model (e.g. qwen3-vl:8b)
+  --avVisionBackend     Vision backend: ollama|llamacpp (default: ollama)
+  --avVisionModel       Vision model: Ollama model name or llama.cpp GGUF path
   --avOllamaHost        Ollama host for vision eval (default: http://127.0.0.1:11434)
+  --avLlamaCliBin       llama.cpp CLI binary for vision eval
+  --avVisionMmproj      mmproj GGUF for llama.cpp vision eval
+  --avLlamaDevice       llama.cpp device, e.g. Vulkan0
+  --avLlamaCtxSize      llama.cpp context size (default: 4096)
+  --avLlamaGpuLayers    llama.cpp GPU layers (default: 99)
   --avQueryOnly         AV gate mode: only require target-word presence in Whisper audio (default)
   --noAvQueryOnly       Disable query-only mode (also require JP similarity vs Whisper)
   --avMaxSwapCandidates Max candidates to AV-check while replacing one bad slot (default: 12)
@@ -1352,6 +1403,12 @@ function hasSenseMatchByLemma(tokenizer, jpText, query, matcher) {
     const values = mode === "exact" ? [surf, reading] : mode === "lemma" ? [surf, base, reading] : [surf, base];
     const bag = mode === "exact" ? exact : mode === "lemma" ? lemma : family;
     for (const v of values) {
+      if (
+        (v === reading) &&
+        !matcher?.allowReading
+      ) {
+        continue;
+      }
       if (!v || !bag.has(v)) continue;
       if (!queryKanji) return true;
       const vKanji = extractKanji(v || surf || base);
@@ -1920,36 +1977,82 @@ function ffmpegCaptureFrameForEval({ input, timeMs, output, verbose }) {
   }
 }
 
+function buildAvAudioWindow(startMs, endMs) {
+  const clipStart = Number(startMs);
+  const clipEnd = Number(endMs);
+  if (!Number.isFinite(clipStart) || !Number.isFinite(clipEnd) || clipEnd <= clipStart) {
+    return { startMs: 0, endMs: 1400 };
+  }
+  const clipLen = clipEnd - clipStart;
+  const prePad = clipLen < 1200 ? 520 : 280;
+  const postPad = clipLen < 1200 ? 720 : 380;
+  let nextStart = Math.max(0, Math.round(clipStart - prePad));
+  let nextEnd = Math.max(nextStart + 900, Math.round(clipEnd + postPad));
+  const minLen = clipLen < 1200 ? 1400 : 1000;
+  if (nextEnd - nextStart < minLen) nextEnd = nextStart + minLen;
+  return { startMs: nextStart, endMs: nextEnd };
+}
+
+function resolveWhisperCppModel(model) {
+  const raw = String(model || "").trim();
+  if (!raw) return defaultAvWhisperModel();
+  if (fs.existsSync(raw)) return raw;
+  const home = process.env.HOME || "";
+  const candidates = [
+    path.join(home, "snap", "whisper-cpp", "common", ".local", "share", "whisper-cpp", raw),
+    path.join(home, "snap", "whisper-cpp", "common", ".local", "share", "whisper-cpp", `ggml-${raw}.bin`),
+    path.join(home, ".openclaw", "vendor", "whisper.cpp-shallow", "models", raw),
+    path.join(home, ".openclaw", "vendor", "whisper.cpp-shallow", "models", `ggml-${raw}.bin`),
+  ];
+  for (const file of candidates) {
+    if (fs.existsSync(file)) return file;
+  }
+  return raw;
+}
+
 function runWhisperForEval({ audioFile, model, language, workDir, verbose }) {
   const base = path.basename(audioFile, path.extname(audioFile));
   const outJson = path.join(workDir, `${base}.json`);
   try {
     fs.unlinkSync(outJson);
   } catch {}
+  const cli = defaultWhisperCliBin();
+  const resolvedModel = resolveWhisperCppModel(model);
   const args = [
+    "-m",
+    resolvedModel,
+    "-l",
+    String(language || "ja").toLowerCase().startsWith("j") ? "ja" : String(language || "auto"),
+    "-oj",
+    "-of",
+    path.join(workDir, base),
+    "-f",
     audioFile,
-    "--model",
-    model,
-    "--language",
-    language,
-    "--task",
-    "transcribe",
-    "--word_timestamps",
-    "False",
-    "--output_format",
-    "json",
-    "--output_dir",
-    workDir,
   ];
-  const res = spawnSync("whisper", args, { encoding: "utf8" });
+  const res = spawnSync(cli, args, { encoding: "utf8" });
   if (verbose && res.stderr) process.stderr.write(res.stderr);
   if (res.status !== 0 || !fs.existsSync(outJson)) {
-    return { ok: false, text: "", error: "whisper_failed", startMs: null, endMs: null };
+    return {
+      ok: false,
+      text: "",
+      error: "whisper_failed",
+      detail: [String(res.stdout || "").trim(), String(res.stderr || "").trim()].filter(Boolean).join("\n"),
+      startMs: null,
+      endMs: null,
+    };
   }
   try {
     const parsed = JSON.parse(fs.readFileSync(outJson, "utf8"));
-    const text = String(parsed?.text || "").trim();
-    const segments = Array.isArray(parsed?.segments) ? parsed.segments : [];
+    const transcription = Array.isArray(parsed?.transcription) ? parsed.transcription : [];
+    const text = transcription
+      .map((s) => String(s?.text || "").trim())
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+    const segments = transcription.map((s) => ({
+      start: Number(s?.offsets?.from) / 1000,
+      end: Number(s?.offsets?.to) / 1000,
+    }));
     const starts = segments
       .map((s) => Number(s?.start))
       .filter((x) => Number.isFinite(x) && x >= 0)
@@ -1964,18 +2067,32 @@ function runWhisperForEval({ audioFile, model, language, workDir, verbose }) {
       ok: Boolean(text),
       text,
       error: text ? "" : "whisper_empty",
+      detail: text ? "" : String(res.stderr || res.stdout || "").trim(),
       startMs,
       endMs,
     };
   } catch {
-    return { ok: false, text: "", error: "whisper_bad_json", startMs: null, endMs: null };
+    return {
+      ok: false,
+      text: "",
+      error: "whisper_bad_json",
+      detail: "",
+      startMs: null,
+      endMs: null,
+    };
   }
 }
 
 async function runVisionSubtitleEvalSingle({
   imageFile,
   model,
+  backend,
   host,
+  cliBin,
+  mmproj,
+  device,
+  ctxSize,
+  gpuLayers,
   timeoutMs,
   query,
   matchText,
@@ -2030,6 +2147,153 @@ async function runVisionSubtitleEvalSingle({
     "Set has_extra=true when frame includes leading/trailing subtitle that does not belong to spoken line.",
     "Set line_ok=true only when subtitle in frame aligns with candidate line and Whisper transcript.",
   ].join("\n");
+  if (String(backend || "ollama").trim().toLowerCase() === "llamacpp") {
+    const bin = String(cliBin || "").trim();
+    const modelPath = String(model || "").trim();
+    const mmprojPath = String(mmproj || "").trim();
+    if (!bin || !fs.existsSync(bin)) {
+      return {
+        ok: false,
+        error: "llamacpp_bin_missing",
+        jp: "",
+        en: "",
+        hasExtra: false,
+        kanjiOk: true,
+        senseOk: true,
+        lineOk: true,
+        lineProvided: false,
+        kanjiProvided: false,
+        senseProvided: false,
+        notes: "",
+      };
+    }
+    if (!modelPath || !fs.existsSync(modelPath)) {
+      return {
+        ok: false,
+        error: "llamacpp_model_missing",
+        jp: "",
+        en: "",
+        hasExtra: false,
+        kanjiOk: true,
+        senseOk: true,
+        lineOk: true,
+        lineProvided: false,
+        kanjiProvided: false,
+        senseProvided: false,
+        notes: "",
+      };
+    }
+    if (!mmprojPath || !fs.existsSync(mmprojPath)) {
+      return {
+        ok: false,
+        error: "llamacpp_mmproj_missing",
+        jp: "",
+        en: "",
+        hasExtra: false,
+        kanjiOk: true,
+        senseOk: true,
+        lineOk: true,
+        lineProvided: false,
+        kanjiProvided: false,
+        senseProvided: false,
+        notes: "",
+      };
+    }
+    const cliArgs = [
+      "--model",
+      modelPath,
+      "--mmproj",
+      mmprojPath,
+      "--image",
+      file,
+      "--simple-io",
+      "--no-display-prompt",
+      "--single-turn",
+      "--prompt",
+      prompt,
+      "--ctx-size",
+      String(Math.max(1024, Number(ctxSize) || 4096)),
+      "--n-predict",
+      "160",
+      "--log-disable",
+    ];
+    if (device) cliArgs.push("--device", String(device));
+    if (Number.isFinite(Number(gpuLayers))) {
+      cliArgs.push("--n-gpu-layers", String(Math.max(0, Number(gpuLayers))));
+    }
+    const cliRes = spawnSync(bin, cliArgs, {
+      encoding: "utf8",
+      timeout: Math.max(1000, Number(timeoutMs) || 45000),
+    });
+    const raw = String(cliRes.stdout || "").trim();
+    if (cliRes.error) {
+      return {
+        ok: false,
+        error: String(cliRes.error.message || "llamacpp_failed"),
+        jp: "",
+        en: "",
+        hasExtra: false,
+        kanjiOk: true,
+        senseOk: true,
+        lineOk: true,
+        lineProvided: false,
+        kanjiProvided: false,
+        senseProvided: false,
+        notes: "",
+        raw,
+      };
+    }
+    if (cliRes.signal === "SIGTERM" || cliRes.signal === "SIGKILL") {
+      return {
+        ok: false,
+        error: "llamacpp_timeout",
+        jp: "",
+        en: "",
+        hasExtra: false,
+        kanjiOk: true,
+        senseOk: true,
+        lineOk: true,
+        lineProvided: false,
+        kanjiProvided: false,
+        senseProvided: false,
+        notes: "",
+        raw,
+      };
+    }
+    if (cliRes.status !== 0) {
+      return {
+        ok: false,
+        error: `llamacpp_exit_${cliRes.status}`,
+        jp: "",
+        en: "",
+        hasExtra: false,
+        kanjiOk: true,
+        senseOk: true,
+        lineOk: true,
+        lineProvided: false,
+        kanjiProvided: false,
+        senseProvided: false,
+        notes: "",
+        raw: [raw, String(cliRes.stderr || "").trim()].filter(Boolean).join("\n"),
+      };
+    }
+    const parsed = parseVisionSubtitleResponse(raw);
+    return {
+      ok: parsed.parsed,
+      error: parsed.parsed ? "" : "vision_parse_failed",
+      jp: parsed.jp,
+      en: parsed.en,
+      hasExtra: Boolean(parsed.hasExtra),
+      kanjiOk: Boolean(parsed.kanjiOk),
+      senseOk: Boolean(parsed.senseOk),
+      lineOk: Boolean(parsed.lineOk),
+      lineProvided: Boolean(parsed.lineProvided),
+      kanjiProvided: Boolean(parsed.kanjiProvided),
+      senseProvided: Boolean(parsed.senseProvided),
+      notes: String(parsed.notes || ""),
+      raw,
+    };
+  }
   const body = {
     model: m,
     prompt,
@@ -2127,8 +2391,14 @@ async function runVisionSubtitleEvalSingle({
 
 async function runVisionSubtitleEval({
   imageFiles,
+  backend,
   model,
   host,
+  cliBin,
+  mmproj,
+  device,
+  ctxSize,
+  gpuLayers,
   timeoutMs,
   query,
   expectedMeaning,
@@ -2161,8 +2431,14 @@ async function runVisionSubtitleEval({
   for (const file of files) {
     const one = await runVisionSubtitleEvalSingle({
       imageFile: file,
+      backend,
       model,
       host,
+      cliBin,
+      mmproj,
+      device,
+      ctxSize,
+      gpuLayers,
       timeoutMs,
       query,
       expectedMeaning,
@@ -2244,12 +2520,17 @@ async function evaluateCandidateAv(item, args, avCtx) {
     item.clipEndMs,
     item.matchText || "",
     expectedMeaning,
+    args.avVisionBackend,
     args.avWhisperModel,
     args.avWhisperLanguage,
     args.avVisionModel,
     String(Boolean(args.avQueryOnly)),
     Number(args.avMinAsrSim || 0),
     Number(args.avMinVisionSim || 0),
+    args.avVisionMmproj,
+    args.avLlamaDevice,
+    Number(args.avLlamaCtxSize || 0),
+    Number(args.avLlamaGpuLayers || 0),
   ].join("|");
   if (avCache?.has(key)) return avCache.get(key);
 
@@ -2309,11 +2590,12 @@ async function evaluateCandidateAv(item, args, avCtx) {
   }
 
   // Audio is the hard first gate. If target form is missing in ASR, reject before vision.
+  const avAudioWindow = buildAvAudioWindow(item.clipStartMs, item.clipEndMs);
   try {
     ffmpegExtractAudioForEval({
       input: video,
-      startMs: item.clipStartMs,
-      endMs: item.clipEndMs,
+      startMs: avAudioWindow.startMs,
+      endMs: avAudioWindow.endMs,
       output: audioFile,
       verbose: args.verbose,
     });
@@ -2323,7 +2605,7 @@ async function evaluateCandidateAv(item, args, avCtx) {
     return result;
   }
 
-  const asr = runWhisperForEval({
+  let asr = runWhisperForEval({
     audioFile,
     model: args.avWhisperModel,
     language: args.avWhisperLanguage,
@@ -2333,29 +2615,68 @@ async function evaluateCandidateAv(item, args, avCtx) {
   result.meta.asrText = asr.text || "";
   result.meta.asrStartMs = Number.isFinite(asr.startMs) ? asr.startMs : null;
   result.meta.asrEndMs = Number.isFinite(asr.endMs) ? asr.endMs : null;
-  const jpAsr = normalizeJapaneseText(asr.text || "");
+  if (asr.detail) result.meta.asrDetail = String(asr.detail || "");
   const enCandidate = normalizeEnglishText(item.enText || "");
 
-  if (!asr.ok || !jpAsr) {
-    fail("av_asr_failed");
+  if (!asr.ok || !normalizeJapaneseText(asr.text || "")) {
+    const retryAudioFile = path.join(evalDir, `${safeFilename(args.query)}_${sig}_retry.wav`);
+    const retryWindow = {
+      startMs: Math.max(0, Math.round(avAudioWindow.startMs - 500)),
+      endMs: Math.max(
+        Math.round(avAudioWindow.endMs + 700),
+        Math.round(avAudioWindow.startMs + 2200),
+      ),
+    };
+    try {
+      ffmpegExtractAudioForEval({
+        input: video,
+        startMs: retryWindow.startMs,
+        endMs: retryWindow.endMs,
+        output: retryAudioFile,
+        verbose: args.verbose,
+      });
+      const retryAsr = runWhisperForEval({
+        audioFile: retryAudioFile,
+        model: args.avWhisperModel,
+        language: args.avWhisperLanguage,
+        workDir: evalDir,
+        verbose: args.verbose,
+      });
+      if (retryAsr.ok && normalizeJapaneseText(retryAsr.text || "")) {
+        asr = retryAsr;
+        result.meta.asrText = asr.text || "";
+        result.meta.asrStartMs = Number.isFinite(asr.startMs) ? asr.startMs : null;
+        result.meta.asrEndMs = Number.isFinite(asr.endMs) ? asr.endMs : null;
+        result.meta.asrRetried = true;
+        if (asr.detail) result.meta.asrDetail = String(asr.detail || "");
+      } else {
+        fail("av_asr_failed");
+        result.reasons = Array.from(new Set(result.reasons.filter(Boolean)));
+        if (avCache) avCache.set(key, result);
+        return result;
+      }
+    } catch {
+      fail("av_asr_failed");
+      result.reasons = Array.from(new Set(result.reasons.filter(Boolean)));
+      if (avCache) avCache.set(key, result);
+      return result;
+    }
+  }
+
+  const jpAsr = normalizeJapaneseText(asr.text || "");
+  const asrSim = diceSimilarity(jpCandidate, jpAsr);
+  result.meta.asrSim = Number(asrSim.toFixed(3));
+  if (forms.length > 0 && !includesAnyNormalized(asr.text || "", forms)) {
+    fail("av_query_not_in_audio");
     result.reasons = Array.from(new Set(result.reasons.filter(Boolean)));
     if (avCache) avCache.set(key, result);
     return result;
-  } else {
-    const asrSim = diceSimilarity(jpCandidate, jpAsr);
-    result.meta.asrSim = Number(asrSim.toFixed(3));
-    if (forms.length > 0 && !includesAnyNormalized(asr.text || "", forms)) {
-      fail("av_query_not_in_audio");
-      result.reasons = Array.from(new Set(result.reasons.filter(Boolean)));
-      if (avCache) avCache.set(key, result);
-      return result;
-    }
-    if (!args.avQueryOnly && asrSim < Number(args.avMinAsrSim || 0.5)) {
-      fail("av_audio_mismatch");
-      result.reasons = Array.from(new Set(result.reasons.filter(Boolean)));
-      if (avCache) avCache.set(key, result);
-      return result;
-    }
+  }
+  if (!args.avQueryOnly && asrSim < Number(args.avMinAsrSim || 0.5)) {
+    fail("av_audio_mismatch");
+    result.reasons = Array.from(new Set(result.reasons.filter(Boolean)));
+    if (avCache) avCache.set(key, result);
+    return result;
   }
 
   // Vision runs only after audio gate succeeds; it only checks subtitle alignment quality.
@@ -2378,8 +2699,14 @@ async function evaluateCandidateAv(item, args, avCtx) {
 
     const vision = await runVisionSubtitleEval({
       imageFiles,
+      backend: args.avVisionBackend,
       model: args.avVisionModel,
       host: args.avOllamaHost,
+      cliBin: args.avLlamaCliBin,
+      mmproj: args.avVisionMmproj,
+      device: args.avLlamaDevice,
+      ctxSize: args.avLlamaCtxSize,
+      gpuLayers: args.avLlamaGpuLayers,
       timeoutMs: args.avTimeoutMs,
       query: args.matchContains || args.query,
       matchText: item.matchText || args.query,
@@ -2970,8 +3297,13 @@ function normalizeMatcherMode(rawMode) {
 function buildTokenMatcherSets(query, wordEntry, tokenizer) {
   const canonical = String(query ?? "").trim();
   const reading = toHiragana(wordEntry?.reading || "");
+  const hasQueryKanji = Boolean(extractKanji(canonical));
+  const allowReading =
+    wordEntry?.match?.allowReading != null
+      ? Boolean(wordEntry.match.allowReading)
+      : !hasQueryKanji;
   const exact = new Set(
-    [canonical, reading]
+    [canonical, allowReading ? reading : ""]
       .map((x) => normalizeJapaneseText(String(x || "")))
       .filter(Boolean),
   );
@@ -2993,7 +3325,7 @@ function buildTokenMatcherSets(query, wordEntry, tokenizer) {
     if (base) lemma.add(base);
   }
 
-  return { exact, lemma, reading };
+  return { exact, lemma, reading, allowReading };
 }
 
 function buildQueryMatcher(query, wordEntry, tokenizer) {
@@ -3009,6 +3341,7 @@ function buildQueryMatcher(query, wordEntry, tokenizer) {
     forms,
     exclude,
     reading: tokenSets.reading,
+    allowReading: Boolean(tokenSets.allowReading),
     exactTokens: tokenSets.exact,
     lemmaTokens: tokenSets.lemma,
   };
@@ -3061,6 +3394,7 @@ function findMatchInText(text, matcher, tokenizer) {
     const reading = normalizeJapaneseText(toHiragana(tok?.reading || surface));
     const surfaceKanji = extractKanji(surface);
     const readingMatch =
+      matcher.allowReading &&
       matcher.reading &&
       reading === normalizeJapaneseText(matcher.reading) &&
       (!queryKanji || !surfaceKanji || surfaceKanji === queryKanji);

@@ -2,7 +2,7 @@
 
 No file upload flow. It auto-loads from:
 - `out/shorts/render-manifest.json`
-- `out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json`
+- `out/shorts/word-candidates-llm-top.full.json`
 - `out/shorts/word-candidates-db.json`
 - `out/shorts/curation-log.jsonl` (if present)
 

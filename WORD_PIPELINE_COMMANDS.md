@@ -12,13 +12,13 @@ npm run -s word:board
 ```
 
 - Keep ranking files frozen:
-  - `out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json`
-  - `out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json`
+  - `out/shorts/word-candidates-llm-top.full.json`
+  - `out/saveFile/word-candidates-llm-top.full.backup.json`
 - Do not run full rerank in this phase.
 - If needed, restore active from backup:
 
 ```bash
-cp out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json
+cp out/saveFile/word-candidates-llm-top.full.backup.json out/shorts/word-candidates-llm-top.full.json
 ```
 
 ## Stage 1 ASR (Sidecar Only, Safe)

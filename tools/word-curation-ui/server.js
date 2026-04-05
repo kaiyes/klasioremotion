@@ -21,7 +21,7 @@ const OUT_ROOT = path.resolve(ROOT, "out", "shorts");
 const MANIFEST_FILE = path.join(OUT_ROOT, "render-manifest.json");
 const RERANK_FILE = path.join(
   OUT_ROOT,
-  "word-candidates-llm-top.qwen2.5-3b.full.json",
+  "word-candidates-llm-top.full.json",
 );
 const DB_FILE = path.join(OUT_ROOT, "word-candidates-db.json");
 const DB_FALLBACK_FILES = [
@@ -35,6 +35,16 @@ const DB_FALLBACK_FILES = [
   ),
 ];
 const RERANK_FALLBACK_FILES = [
+  path.join(
+    OUT_ROOT,
+    "word-candidates-llm-top.qwen2.5-3b.full.json",
+  ),
+  path.join(
+    ROOT,
+    "out",
+    "saveFile",
+    "word-candidates-llm-top.full.backup.json",
+  ),
   path.join(
     ROOT,
     "out",
@@ -72,19 +82,47 @@ const UI_AV_WHISPER_LANGUAGE = String(
 const UI_AV_VISION_MODEL = String(
   process.env.UI_AV_VISION_MODEL || "qwen3-vl:8b",
 ).trim();
+const UI_AV_VISION_BACKEND = String(
+  process.env.UI_AV_VISION_BACKEND || "ollama",
+).trim();
 const UI_AV_OLLAMA_HOST = String(
   process.env.UI_AV_OLLAMA_HOST ||
     process.env.OLLAMA_HOST ||
     "http://127.0.0.1:11434",
 ).trim();
+const UI_AV_LLAMA_CLI_BIN = String(
+  process.env.UI_AV_LLAMA_CLI_BIN || "",
+).trim();
+const UI_AV_VISION_MMPROJ = String(
+  process.env.UI_AV_VISION_MMPROJ || "",
+).trim();
+const UI_AV_LLAMA_DEVICE = String(
+  process.env.UI_AV_LLAMA_DEVICE || "",
+).trim();
+const UI_AV_LLAMA_CTX_SIZE = Number.isFinite(
+  Number(process.env.UI_AV_LLAMA_CTX_SIZE),
+)
+  ? Number(process.env.UI_AV_LLAMA_CTX_SIZE)
+  : 4096;
+const UI_AV_LLAMA_GPU_LAYERS = Number.isFinite(
+  Number(process.env.UI_AV_LLAMA_GPU_LAYERS),
+)
+  ? Number(process.env.UI_AV_LLAMA_GPU_LAYERS)
+  : 99;
+const UI_AV_QUERY_ONLY = /^(1|true|yes|on)$/i.test(
+  String(process.env.UI_AV_QUERY_ONLY || "0"),
+);
 const UI_AV_MIN_ASR_SIM = Number.isFinite(Number(process.env.UI_AV_MIN_ASR_SIM))
   ? Number(process.env.UI_AV_MIN_ASR_SIM)
-  : 0.5;
+  : 0.62;
 const UI_AV_MIN_VISION_SIM = Number.isFinite(
   Number(process.env.UI_AV_MIN_VISION_SIM),
 )
   ? Number(process.env.UI_AV_MIN_VISION_SIM)
   : 0.42;
+const UI_AV_FAIL_POLICY = String(
+  process.env.UI_AV_FAIL_POLICY || "strict",
+).trim().toLowerCase();
 const UI_AV_TIMEOUT_MS = Number.isFinite(Number(process.env.UI_AV_TIMEOUT_MS))
   ? Number(process.env.UI_AV_TIMEOUT_MS)
   : 45000;
@@ -212,16 +250,30 @@ function normalizeSlotPads(slotPads) {
 function appendUiAvEvalArgs(args) {
   if (!UI_AV_EVAL) return;
   args.push("--avEval");
-  args.push("--avQueryOnly");
+  if (UI_AV_QUERY_ONLY) {
+    args.push("--avQueryOnly");
+  } else {
+    args.push("--noAvQueryOnly");
+  }
   if (UI_AV_WHISPER_MODEL) args.push("--avWhisperModel", UI_AV_WHISPER_MODEL);
   if (UI_AV_WHISPER_LANGUAGE)
     args.push("--avWhisperLanguage", UI_AV_WHISPER_LANGUAGE);
+  if (UI_AV_VISION_BACKEND)
+    args.push("--avVisionBackend", UI_AV_VISION_BACKEND);
   if (UI_AV_VISION_MODEL) args.push("--avVisionModel", UI_AV_VISION_MODEL);
   if (UI_AV_OLLAMA_HOST) args.push("--avOllamaHost", UI_AV_OLLAMA_HOST);
+  if (UI_AV_LLAMA_CLI_BIN) args.push("--avLlamaCliBin", UI_AV_LLAMA_CLI_BIN);
+  if (UI_AV_VISION_MMPROJ) args.push("--avVisionMmproj", UI_AV_VISION_MMPROJ);
+  if (UI_AV_LLAMA_DEVICE) args.push("--avLlamaDevice", UI_AV_LLAMA_DEVICE);
+  if (Number.isFinite(UI_AV_LLAMA_CTX_SIZE))
+    args.push("--avLlamaCtxSize", String(UI_AV_LLAMA_CTX_SIZE));
+  if (Number.isFinite(UI_AV_LLAMA_GPU_LAYERS))
+    args.push("--avLlamaGpuLayers", String(UI_AV_LLAMA_GPU_LAYERS));
   if (Number.isFinite(UI_AV_MIN_ASR_SIM))
     args.push("--avMinAsrSim", String(UI_AV_MIN_ASR_SIM));
   if (Number.isFinite(UI_AV_MIN_VISION_SIM))
     args.push("--avMinVisionSim", String(UI_AV_MIN_VISION_SIM));
+  if (UI_AV_FAIL_POLICY) args.push("--avFailPolicy", UI_AV_FAIL_POLICY);
   if (Number.isFinite(UI_AV_TIMEOUT_MS))
     args.push("--avTimeoutMs", String(UI_AV_TIMEOUT_MS));
 }

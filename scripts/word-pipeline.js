@@ -6,12 +6,30 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const DEFAULTS = {
-  wordsFile: path.join("source_content", "all_anime_top_2000.match.first2000.json"),
+  wordsFile: path.join(
+    "source_content",
+    "all_anime_top_2000.match.first2000.json",
+  ),
   queryField: "word",
   videosDir: path.join("source_content", "shingeki_no_kyojin", "videos"),
-  subsDir: path.join("source_content", "shingeki_no_kyojin", "subs", "japanese"),
-  enSubsDir: path.join("source_content", "shingeki_no_kyojin", "subs", "english_embedded"),
-  subOffsetsFile: path.join("source_content", "shingeki_no_kyojin", "subs", "sub-offsets.json"),
+  subsDir: path.join(
+    "source_content",
+    "shingeki_no_kyojin",
+    "subs",
+    "japanese",
+  ),
+  enSubsDir: path.join(
+    "source_content",
+    "shingeki_no_kyojin",
+    "subs",
+    "english_embedded",
+  ),
+  subOffsetsFile: path.join(
+    "source_content",
+    "shingeki_no_kyojin",
+    "subs",
+    "sub-offsets.json",
+  ),
   outBase: path.join("out", "shorts"),
   action: "full", // rank | render | full
   profile: "fast", // fast | whisper
@@ -21,12 +39,18 @@ const DEFAULTS = {
   mode: "line",
   wordPlacement: "anywhere", // anywhere | middle
   enLinePolicy: "best",
-  model: "llama3.2:3b",
+  backend: String(process.env.RERANK_BACKEND || "llamacpp")
+    .trim()
+    .toLowerCase(),
+  model: String(process.env.RERANK_MODEL || "qwen35-4b-q4km").trim(),
+  host: String(process.env.RERANK_HOST || "http://127.0.0.1:18080").trim(),
   printEvery: 25,
   renderMode: "short", // short | stitched
   layout: "standard", // standard | instagram
   allowFallbackRender: false,
   allowWeak: false,
+  includeQr: true,
+  appendEndCard: true,
   resume: true,
   force: false,
   decorate: false,
@@ -43,8 +67,13 @@ const DEFAULTS = {
   },
 };
 
-const PRIMARY_RERANK_FILENAME = "word-candidates-llm-top.qwen2.5-3b.full.json";
-const SAVEFILE_RERANK_BACKUP_FILENAME = "word-candidates-llm-top.qwen2.5-3b.full.backup.json";
+const PRIMARY_RERANK_FILENAME = "word-candidates-llm-top.full.json";
+const SAVEFILE_RERANK_BACKUP_FILENAME =
+  "word-candidates-llm-top.full.backup.json";
+const LEGACY_RERANK_FILENAMES = [
+  "word-candidates-llm-top.qwen2.5-3b.full.json",
+  "word-candidates-llm-top.qwen2.5-3b.full.backup.json",
+];
 
 function printHelpAndExit(code) {
   console.log(
@@ -78,7 +107,9 @@ Options:
   --wordMiddle             Alias for --wordPlacement middle
   --wordAnywhere           Alias for --wordPlacement anywhere
   --enLinePolicy <p>       best|nearest|merge (default: ${DEFAULTS.enLinePolicy})
+  --backend <name>         ollama|llamacpp (default: ${DEFAULTS.backend})
   --model <name>           Default: ${DEFAULTS.model}
+  --host <url>             Default: ${DEFAULTS.host}
   --printEvery <n>         Default: ${DEFAULTS.printEvery}
   --renderMode <mode>      short|stitched (default: ${DEFAULTS.renderMode})
   --short                  Alias for --renderMode short
@@ -86,6 +117,8 @@ Options:
   --layout <name>          standard|instagram (default: ${DEFAULTS.layout})
   --allowFallbackRender    Allow rendering fallback-ranked words (default: off)
   --allowWeak              Accept weak/trivial LLM rankings (default: off)
+  --noQr                   Disable QR code on shorts
+  --noEndCard              Disable appended end card clip
   --resume / --no-resume   Default: resume
   --force                  Re-rank already processed words
   --decorate               Stitched mode only: burn JP+EN overlay cards
@@ -127,8 +160,15 @@ function parseRange(raw) {
   }
   const start = Number(m[1]);
   const end = Number(m[2]);
-  if (!Number.isInteger(start) || !Number.isInteger(end) || start <= 0 || end < start) {
-    throw new Error(`Bad --range "${raw}". Range must be positive and end >= start.`);
+  if (
+    !Number.isInteger(start) ||
+    !Number.isInteger(end) ||
+    start <= 0 ||
+    end < start
+  ) {
+    throw new Error(
+      `Bad --range "${raw}". Range must be positive and end >= start.`,
+    );
   }
   return { start, end };
 }
@@ -211,11 +251,15 @@ function parseArgs(argv) {
         takeNext();
         break;
       case "mode":
-        args.mode = String(v || "").trim().toLowerCase();
+        args.mode = String(v || "")
+          .trim()
+          .toLowerCase();
         takeNext();
         break;
       case "wordPlacement":
-        args.wordPlacement = String(v || "").trim().toLowerCase();
+        args.wordPlacement = String(v || "")
+          .trim()
+          .toLowerCase();
         takeNext();
         break;
       case "wordMiddle":
@@ -225,11 +269,23 @@ function parseArgs(argv) {
         args.wordPlacement = "anywhere";
         break;
       case "enLinePolicy":
-        args.enLinePolicy = String(v || "").trim().toLowerCase();
+        args.enLinePolicy = String(v || "")
+          .trim()
+          .toLowerCase();
         takeNext();
         break;
       case "model":
         args.model = String(v || "").trim();
+        takeNext();
+        break;
+      case "backend":
+        args.backend = String(v || "")
+          .trim()
+          .toLowerCase();
+        takeNext();
+        break;
+      case "host":
+        args.host = String(v || "").trim();
         takeNext();
         break;
       case "printEvery":
@@ -237,7 +293,9 @@ function parseArgs(argv) {
         takeNext();
         break;
       case "renderMode":
-        args.renderMode = String(v || "").trim().toLowerCase();
+        args.renderMode = String(v || "")
+          .trim()
+          .toLowerCase();
         takeNext();
         break;
       case "short":
@@ -259,8 +317,16 @@ function parseArgs(argv) {
         args.allowWeak = false;
         break;
       case "layout":
-        args.layout = String(v || "").trim().toLowerCase();
+        args.layout = String(v || "")
+          .trim()
+          .toLowerCase();
         takeNext();
+        break;
+      case "noQr":
+        args.includeQr = false;
+        break;
+      case "noEndCard":
+        args.appendEndCard = false;
         break;
       case "resume":
         args.resume = true;
@@ -310,14 +376,20 @@ function parseArgs(argv) {
   }
 
   if (positional.length > 1) {
-    throw new Error(`Unexpected positional args: ${positional.slice(1).join(" ")}`);
+    throw new Error(
+      `Unexpected positional args: ${positional.slice(1).join(" ")}`,
+    );
   }
   if (positional.length === 1) {
-    args.action = String(positional[0] || "").trim().toLowerCase();
+    args.action = String(positional[0] || "")
+      .trim()
+      .toLowerCase();
   }
 
   if (!["rank", "render", "full"].includes(args.action)) {
-    throw new Error(`Action must be rank, render, or full. Got "${args.action}".`);
+    throw new Error(
+      `Action must be rank, render, or full. Got "${args.action}".`,
+    );
   }
   if (!["fast", "whisper"].includes(args.profile)) {
     throw new Error(`Profile must be fast or whisper. Got "${args.profile}".`);
@@ -372,7 +444,9 @@ function resolveWindow(args) {
   if (args.scope.kind === "range") {
     const { start, end } = args.scope.value;
     if (start > total) {
-      throw new Error(`--range start ${start} is beyond words list length ${total}.`);
+      throw new Error(
+        `--range start ${start} is beyond words list length ${total}.`,
+      );
     }
     const clampedEnd = Math.min(end, total);
     return {
@@ -403,7 +477,9 @@ function runOrThrow(cmd, cmdArgs, verbose) {
   }
   const res = spawnSync(cmd, cmdArgs, { stdio: "inherit" });
   if (res.status !== 0) {
-    throw new Error(`${path.basename(cmdArgs[0])} failed with exit code ${res.status}`);
+    throw new Error(
+      `${path.basename(cmdArgs[0])} failed with exit code ${res.status}`,
+    );
   }
 }
 
@@ -481,7 +557,10 @@ function finalizeShortOutputFile(outputDir, word) {
   const generated = generatedShortOutputPath(outputDir, word);
   const canonical = canonicalShortOutputPath(outputDir, word);
   const legacy = path.join(outputDir, `${safeFilename(word)}_clean_shorts.mp4`);
-  if (fs.existsSync(generated) && path.resolve(generated) !== path.resolve(canonical)) {
+  if (
+    fs.existsSync(generated) &&
+    path.resolve(generated) !== path.resolve(canonical)
+  ) {
     fs.renameSync(generated, canonical);
   }
   if (fs.existsSync(legacy) && !fs.existsSync(canonical)) {
@@ -539,8 +618,19 @@ function getTargetWordsForScope(args) {
 function resolveRerankFile(outRoot) {
   const primary = path.resolve(outRoot, PRIMARY_RERANK_FILENAME);
   if (fs.existsSync(primary)) return primary;
-  const saveFileBackup = path.resolve(outRoot, "..", "saveFile", SAVEFILE_RERANK_BACKUP_FILENAME);
+  const saveFileBackup = path.resolve(
+    outRoot,
+    "..",
+    "saveFile",
+    SAVEFILE_RERANK_BACKUP_FILENAME,
+  );
   if (fs.existsSync(saveFileBackup)) return saveFileBackup;
+  for (const legacy of LEGACY_RERANK_FILENAMES) {
+    const legacyPath = legacy.endsWith(".backup.json")
+      ? path.resolve(outRoot, "..", "saveFile", legacy)
+      : path.resolve(outRoot, legacy);
+    if (fs.existsSync(legacyPath)) return legacyPath;
+  }
   return primary;
 }
 
@@ -606,10 +696,12 @@ function buildAutoCurateCli(args, window, outRoot, mode) {
   cli.push("--outRoot", outRoot);
   cli.push("--mode", args.mode);
   cli.push("--enLinePolicy", args.enLinePolicy);
+  cli.push("--backend", args.backend);
   cli.push("--topK", String(args.topK));
   cli.push("--maxPerWord", String(args.maxPerWord));
   cli.push("--maxCandidates", String(args.maxCandidates));
   cli.push("--model", args.model);
+  cli.push("--host", args.host);
   cli.push("--printEvery", String(args.printEvery));
   if (args.resume) cli.push("--resume");
   else cli.push("--no-resume");
@@ -643,7 +735,9 @@ function buildAutoCurateCli(args, window, outRoot, mode) {
 }
 
 function parsePickOutOfRangeError(message) {
-  const m = String(message || "").match(/--pick index #\d+ is out of range \(candidates=(\d+)\)/);
+  const m = String(message || "").match(
+    /--pick index #\d+ is out of range \(candidates=(\d+)\)/,
+  );
   if (!m) return null;
   const maxCandidate = Number(m[1]);
   if (!Number.isFinite(maxCandidate) || maxCandidate < 0) return null;
@@ -671,11 +765,18 @@ function backfillPicksBySentence(picks, candidates, targetCount) {
   const seenSentence = new Set();
 
   const tryAdd = (idx) => {
-    if (!Number.isInteger(idx) || idx <= 0 || idx > maxCandidate || usedIdx.has(idx)) {
+    if (
+      !Number.isInteger(idx) ||
+      idx <= 0 ||
+      idx > maxCandidate ||
+      usedIdx.has(idx)
+    ) {
       return false;
     }
     const c = pool[idx - 1] || {};
-    const key = normalizeSentenceKey(c.sentenceText || c.jpText || `idx:${idx}`);
+    const key = normalizeSentenceKey(
+      c.sentenceText || c.jpText || `idx:${idx}`,
+    );
     if (key && seenSentence.has(key)) return false;
     usedIdx.add(idx);
     if (key) seenSentence.add(key);
@@ -732,6 +833,8 @@ function buildVerticalShortCli(args, outRoot, word, picks, opts = {}) {
     "--layout",
     args.layout,
   ];
+  if (!args.includeQr) cli.push("--noQr");
+  if (!args.appendEndCard) cli.push("--noEndCard");
   if (opts.candidatesIn) cli.push("--candidatesIn", opts.candidatesIn);
   if (args.enSubsDir) cli.push("--enSubsDir", args.enSubsDir);
   if (args.verbose) cli.push("--verbose");
@@ -740,8 +843,12 @@ function buildVerticalShortCli(args, outRoot, word, picks, opts = {}) {
 
 function runShortRenderStage(args, outRoot) {
   const preflight = preflightRender(args, outRoot);
-  const rerankWords = Array.isArray(preflight.rerank?.words) ? preflight.rerank.words : [];
-  const rerankMap = new Map(rerankWords.map((rec) => [String(rec?.word || ""), rec]));
+  const rerankWords = Array.isArray(preflight.rerank?.words)
+    ? preflight.rerank.words
+    : [];
+  const rerankMap = new Map(
+    rerankWords.map((rec) => [String(rec?.word || ""), rec]),
+  );
   const dbWordMap = loadDbWordMap(outRoot);
   const targets = preflight.targets;
   const outputDir = path.resolve(outRoot);
@@ -789,7 +896,9 @@ function runShortRenderStage(args, outRoot) {
 
     const status = String(rec?.status || "");
     const top = Array.isArray(rec?.top) ? rec.top : [];
-    let picks = uniquePositiveInts(top.slice(0, args.topK).map((x) => x?.candidateIndex));
+    let picks = uniquePositiveInts(
+      top.slice(0, args.topK).map((x) => x?.candidateIndex),
+    );
     if (picks.length < args.topK) {
       const allTop = uniquePositiveInts(top.map((x) => x?.candidateIndex));
       for (const n of allTop) {
@@ -800,9 +909,12 @@ function runShortRenderStage(args, outRoot) {
     }
 
     manifest.summary.attempted++;
-    const canRenderStatus = status === "ok" || (args.allowFallbackRender && status === "fallback");
+    const canRenderStatus =
+      status === "ok" || (args.allowFallbackRender && status === "fallback");
     const dbRec = dbWordMap.get(word);
-    const dbCandidates = Array.isArray(dbRec?.candidates) ? dbRec.candidates : [];
+    const dbCandidates = Array.isArray(dbRec?.candidates)
+      ? dbRec.candidates
+      : [];
     const dbPoolCap = Math.min(
       dbCandidates.length,
       Number.isFinite(args.maxCandidates) && args.maxCandidates > 0
@@ -812,7 +924,10 @@ function runShortRenderStage(args, outRoot) {
 
     let note = null;
     if (picks.length === 0 && dbPoolCap > 0) {
-      picks = Array.from({ length: Math.min(args.topK, dbPoolCap) }, (_, idx) => idx + 1);
+      picks = Array.from(
+        { length: Math.min(args.topK, dbPoolCap) },
+        (_, idx) => idx + 1,
+      );
       note = "db_fallback_topk";
     }
 
@@ -822,7 +937,9 @@ function runShortRenderStage(args, outRoot) {
         word,
         status: "skipped",
         reason: !canRenderStatus
-          ? (status === "fallback" ? "fallback_blocked" : status || "status_not_renderable")
+          ? status === "fallback"
+            ? "fallback_blocked"
+            : status || "status_not_renderable"
           : "no_top_picks",
         picks: [],
         output,
@@ -837,7 +954,10 @@ function runShortRenderStage(args, outRoot) {
       const workDir = path.resolve(outRoot, "work");
       fs.mkdirSync(workDir, { recursive: true });
       const dbPool = dbCandidates.slice(0, dbPoolCap);
-      candidatesInFile = path.join(workDir, `.tmp_candidates_${safeFilename(word)}.json`);
+      candidatesInFile = path.join(
+        workDir,
+        `.tmp_candidates_${safeFilename(word)}.json`,
+      );
       writeJson(candidatesInFile, {
         query: word,
         source: "db",
@@ -890,8 +1010,15 @@ function runShortRenderStage(args, outRoot) {
     } catch (err) {
       const outOfRange = parsePickOutOfRangeError(err?.message || String(err));
       if (outOfRange) {
-        const adjusted = backfillPicks(finalPicks, outOfRange.maxCandidate, args.topK);
-        if (adjusted.length > 0 && adjusted.join(",") !== finalPicks.join(",")) {
+        const adjusted = backfillPicks(
+          finalPicks,
+          outOfRange.maxCandidate,
+          args.topK,
+        );
+        if (
+          adjusted.length > 0 &&
+          adjusted.join(",") !== finalPicks.join(",")
+        ) {
           note = `adjusted_picks_to_available_candidates(${adjusted.length}/${finalPicks.length})`;
           finalPicks = adjusted;
           try {
@@ -979,13 +1106,17 @@ function main() {
       : args.scope.kind === "range"
         ? `${args.scope.value.start}-${args.scope.value.end}`
         : args.scope.value;
-  console.log(`[word-pipeline] action=${args.action} lane=${args.profile} scope=${scopeLabel}`);
+  console.log(
+    `[word-pipeline] action=${args.action} lane=${args.profile} scope=${scopeLabel}`,
+  );
   console.log(
     `[word-pipeline] wordsWindow=${window.fromIndex} +${window.count === 0 ? "all" : window.count} outRoot=${outRoot}`,
   );
   console.log(`[word-pipeline] renderMode=${args.renderMode}`);
   if (window.selectedWord) {
-    console.log(`[word-pipeline] selectedWord=${window.selectedWord} index=${window.fromIndex}/${window.total}`);
+    console.log(
+      `[word-pipeline] selectedWord=${window.selectedWord} index=${window.fromIndex}/${window.total}`,
+    );
   }
 
   if (args.action === "rank") {

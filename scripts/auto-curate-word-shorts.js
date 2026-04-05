@@ -62,8 +62,9 @@ function parseArgs(argv) {
     maxPerWord: 50,
     topK: 5,
     maxCandidates: 50,
-    model: "llama3.2:3b",
-    host: "http://127.0.0.1:11434",
+    backend: String(process.env.RERANK_BACKEND || "llamacpp").trim().toLowerCase(),
+    model: String(process.env.RERANK_MODEL || "qwen35-4b-q4km").trim(),
+    host: String(process.env.RERANK_HOST || "http://127.0.0.1:18080").trim(),
     timeoutSec: 120,
     temperature: 0.1,
     retries: 2,
@@ -187,6 +188,10 @@ function parseArgs(argv) {
         break;
       case "model":
         args.model = v;
+        takeNext();
+        break;
+      case "backend":
+        args.backend = String(v || "").trim().toLowerCase();
         takeNext();
         break;
       case "host":
@@ -331,7 +336,7 @@ function parseArgs(argv) {
   args.outRoot = path.resolve(args.outRoot);
   args.dbFile = path.resolve(args.dbFile || path.join(args.outRoot, "word-candidates-db.json"));
   args.rerankFile = path.resolve(
-    args.rerankFile || path.join(args.outRoot, "word-candidates-llm-top.qwen2.5-3b.full.json"),
+    args.rerankFile || path.join(args.outRoot, "word-candidates-llm-top.full.json"),
   );
   args.renderOutDir = path.resolve(args.renderOutDir || path.join(args.outRoot, "videos"));
   args.manifestFile = path.resolve(
@@ -351,7 +356,7 @@ Usage:
 
 What it does:
   1) Build candidate DB for your target word window
-  2) Rerank with local Ollama (optional Whisper verification)
+  2) Rerank with local LLM backend (optional Whisper verification)
   3) Render 5-clip stitched videos per word (no manual review step)
 
 Core options:
@@ -370,8 +375,9 @@ Ranking options:
   --topK <n>                Clips per word (default: 5)
   --maxPerWord <n>          Candidate cap in DB (default: 50)
   --maxCandidates <n>       Candidate cap sent to LLM (default: 50)
-  --model <name>            Ollama model (default: llama3.2:3b)
-  --host <url>              Ollama host (default: http://127.0.0.1:11434)
+  --backend <name>          ollama|llamacpp (default: ${String(process.env.RERANK_BACKEND || "llamacpp")})
+  --model <name>            Model / alias (default: ${String(process.env.RERANK_MODEL || "qwen35-4b-q4km")})
+  --host <url>              Backend host (default: ${String(process.env.RERANK_HOST || "http://127.0.0.1:18080")})
   --requireMeaningful       Reject weak LLM ranking (default: on)
   --allowWeak               Accept weak rankings
   --allowFallbackRender     Render words with fallback rank status (default: off)
@@ -611,6 +617,8 @@ function main() {
       args.dbFile,
       "--outFile",
       args.rerankFile,
+      "--backend",
+      args.backend,
       "--model",
       args.model,
       "--host",

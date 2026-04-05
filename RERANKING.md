@@ -18,8 +18,8 @@ It exists so future agents can quickly answer:
   - manual slot curation from UI when needed
 - Do not run full-list rerank during active publishing windows.
 - Keep only two ranking truth files:
-  - `out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json` (active)
-  - `out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json` (backup)
+  - `out/shorts/word-candidates-llm-top.full.json` (active)
+  - `out/saveFile/word-candidates-llm-top.full.backup.json` (backup)
 - Backup was re-synced from active on `2026-02-17` and verified by checksum.
 - If any ranking experiment degrades quality, restore backup immediately.
 
@@ -27,9 +27,9 @@ It exists so future agents can quickly answer:
 
 ### Active files
 - Active rerank file:
-  - `out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json`
+  - `out/shorts/word-candidates-llm-top.full.json`
 - Backup rerank file:
-  - `out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json`
+  - `out/saveFile/word-candidates-llm-top.full.backup.json`
 - Candidate DB:
   - `out/shorts/word-candidates-db.json`
 - Last render manifest:
@@ -73,8 +73,8 @@ Interpretation:
 
 ### Selection rules in `word-pipeline.js` render path
 - It loads rerank file from:
-  1. `out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json`
-  2. fallback `out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json` only if primary is missing
+  1. `out/shorts/word-candidates-llm-top.full.json`
+  2. fallback `out/saveFile/word-candidates-llm-top.full.backup.json` only if primary is missing
 - For each word, picks are built from `rec.top` using `candidateIndex`
 - `topK` default is `5`
 - By default, render requires `status=ok`
@@ -146,7 +146,7 @@ This means downstream agents must trust `words[]` and per-word status over summa
 
 ### Inspect current rerank distribution quickly
 ```bash
-node -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync("out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json","utf8"));const a=j.words||[];let ok=0,fb=0,sk=0,er=0;for(const w of a){const s=String(w.status||"");if(s==="ok")ok++;else if(s==="fallback")fb++;else if(s==="skip")sk++;else if(s==="error")er++;}console.log({words:a.length,ok,fb,sk,er,updatedAt:j?.meta?.updatedAt,model:j?.meta?.model});'
+node -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync("out/shorts/word-candidates-llm-top.full.json","utf8"));const a=j.words||[];let ok=0,fb=0,sk=0,er=0;for(const w of a){const s=String(w.status||"");if(s==="ok")ok++;else if(s==="fallback")fb++;else if(s==="skip")sk++;else if(s==="error")er++;}console.log({words:a.length,ok,fb,sk,er,updatedAt:j?.meta?.updatedAt,model:j?.meta?.model});'
 ```
 
 ### Run rerank in a 10-word window
@@ -156,7 +156,7 @@ npm run -s rank:new-fast -- --fromIndex 60 --count 10 --resume --force --allowFa
 
 ### Restore backup to active immediately
 ```bash
-cp out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json
+cp out/saveFile/word-candidates-llm-top.full.backup.json out/shorts/word-candidates-llm-top.full.json
 ```
 
 ### Render range using active rerank
@@ -224,9 +224,9 @@ When user asks "who generated these videos?", check:
 
 Only these two should be treated as ranking truth:
 - active:
-  - `out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json`
+  - `out/shorts/word-candidates-llm-top.full.json`
 - backup:
-  - `out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json`
+  - `out/saveFile/word-candidates-llm-top.full.backup.json`
 
 Everything else is supporting telemetry.
 
@@ -258,7 +258,7 @@ Each candidate should include:
 - `score` (heuristic extractor score before LLM rerank)
 
 ### Rerank file contract
-File: `out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json`
+File: `out/shorts/word-candidates-llm-top.full.json`
 
 Expected top-level keys:
 - `meta`
@@ -416,7 +416,7 @@ Wrapper default execution:
 Wrapper behavior on success:
 - validates output JSON shape
 - copies active output to:
-  - `out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json`
+  - `out/saveFile/word-candidates-llm-top.full.backup.json`
 
 Operational caution:
 - This means running wrapper can overwrite backup automatically.
@@ -432,7 +432,7 @@ Before any rerank experiment:
 
 Example:
 ```bash
-cp out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json out/saveFile/rerank-snapshot-$(date +%Y%m%d-%H%M%S).json
+cp out/shorts/word-candidates-llm-top.full.json out/saveFile/rerank-snapshot-$(date +%Y%m%d-%H%M%S).json
 ```
 
 ## Windowed Rerank Playbook
@@ -451,8 +451,8 @@ Use a quick diff script:
 ```bash
 node - <<'NODE'
 const fs=require('fs');
-const cur=JSON.parse(fs.readFileSync('out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json','utf8'));
-const bak=JSON.parse(fs.readFileSync('out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json','utf8'));
+const cur=JSON.parse(fs.readFileSync('out/shorts/word-candidates-llm-top.full.json','utf8'));
+const bak=JSON.parse(fs.readFileSync('out/saveFile/word-candidates-llm-top.full.backup.json','utf8'));
 const cm=new Map((cur.words||[]).map(w=>[String(w.word||''),w]));
 const bm=new Map((bak.words||[]).map(w=>[String(w.word||''),w]));
 let statusChanged=0,top1Changed=0;
@@ -486,17 +486,17 @@ If thresholds are not met, do not promote.
 ### Soft rollback
 Restore active from known-good backup:
 ```bash
-cp out/saveFile/word-candidates-llm-top.qwen2.5-3b.full.backup.json out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json
+cp out/saveFile/word-candidates-llm-top.full.backup.json out/shorts/word-candidates-llm-top.full.json
 ```
 
 ### Hard rollback with timestamped backup
 ```bash
-cp out/saveFile/rerank-snapshot-YYYYMMDD-HHMMSS.json out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json
+cp out/saveFile/rerank-snapshot-YYYYMMDD-HHMMSS.json out/shorts/word-candidates-llm-top.full.json
 ```
 
 ### Verify rollback applied
 ```bash
-node -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync("out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json","utf8"));console.log(j.meta?.updatedAt,j.meta?.model,(j.words||[]).length);'
+node -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync("out/shorts/word-candidates-llm-top.full.json","utf8"));console.log(j.meta?.updatedAt,j.meta?.model,(j.words||[]).length);'
 ```
 
 ## Render Diagnostics

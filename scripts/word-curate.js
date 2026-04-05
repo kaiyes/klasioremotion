@@ -144,13 +144,20 @@ function getManifestPath() {
 
 function getRerankPath() {
   const outRoot = getOutRoot();
-  const primary = path.join(outRoot, "word-candidates-llm-top.qwen2.5-3b.full.json");
+  const primary = path.join(outRoot, "word-candidates-llm-top.full.json");
   if (fs.existsSync(primary)) return primary;
+  const legacyPrimary = path.join(outRoot, "word-candidates-llm-top.qwen2.5-3b.full.json");
+  if (fs.existsSync(legacyPrimary)) return legacyPrimary;
   const backup = path.join(
+    path.resolve(outRoot, "..", "saveFile"),
+    "word-candidates-llm-top.full.backup.json",
+  );
+  if (fs.existsSync(backup)) return backup;
+  const legacyBackup = path.join(
     path.resolve(outRoot, "..", "saveFile"),
     "word-candidates-llm-top.qwen2.5-3b.full.backup.json",
   );
-  if (fs.existsSync(backup)) return backup;
+  if (fs.existsSync(legacyBackup)) return legacyBackup;
   return primary;
 }
 

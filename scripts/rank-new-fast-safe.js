@@ -14,12 +14,12 @@ const DB_FILE = path.join(
   "word-candidates-db.json",
 );
 const OUT_ROOT = path.join(ROOT, "out", "shorts");
-const PRIMARY_OUT_FILE = path.join(OUT_ROOT, "word-candidates-llm-top.qwen2.5-3b.full.json");
+const PRIMARY_OUT_FILE = path.join(OUT_ROOT, "word-candidates-llm-top.full.json");
 const BACKUP_OUT_FILE = path.join(
   ROOT,
   "out",
   "saveFile",
-  "word-candidates-llm-top.qwen2.5-3b.full.backup.json",
+  "word-candidates-llm-top.full.backup.json",
 );
 
 function getArgValue(args, key, fallback = null) {

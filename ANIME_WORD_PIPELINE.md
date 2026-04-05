@@ -4,6 +4,9 @@ Current scope: Node.js + ffmpeg anime vocab short generation.
 
 This file is the at-a-glance source of truth for the current non-Remotion workflow.
 
+Deep experiment log:
+- [`docs/PIPELINE_ADVENTURE_LOG_2026-03.md`](/home/kaiyes/projects/klasioremotion/docs/PIPELINE_ADVENTURE_LOG_2026-03.md)
+
 ## What This Repo Is Doing
 
 The active production workflow mines Japanese anime subtitles for words from a curated 2000-word list, finds good example lines, ranks them, and renders vertical learning shorts.
@@ -61,6 +64,12 @@ What it does:
 - adds common literal compounds
 - writes updated `match.forms` back to the words JSON
 
+Important note about the web app family dropdown:
+- The “many inflections/families” shown in the curation UI are not a separate hidden dataset.
+- They come from `word + match.forms` in the main word list JSON.
+- That means the current family list already exists and can be used now.
+- The missing piece is not family discovery, it is family ranking and promotion quality.
+
 ### 2) Subtitle matching and clip extraction
 
 Core extractor:
@@ -113,14 +122,14 @@ What it does:
 - reads the candidate DB
 - pre-gates weak candidates
 - optionally verifies subtitle/audio agreement with Whisper ASR
-- sends shortlist candidates to Ollama
+- sends shortlist candidates to the configured local LLM backend
 - writes top picks per word
 
 Main rerank file:
-- `out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json`
+- `out/shorts/word-candidates-llm-top.full.json`
 
 Important note:
-- The filename says `qwen2.5-3b`, but some script defaults currently reference `llama3.2:3b`.
+- Current rerank defaults target the local `llama.cpp` server on `127.0.0.1:18080` with model alias `qwen35-4b-q4km`.
 - Treat the actual output file in `out/shorts` as the current ranking truth.
 
 ### 5) Final short rendering
@@ -169,7 +178,7 @@ npm run -s word:board
 The UI reads:
 - `out/shorts/render-manifest.json`
 - `out/shorts/word-candidates-db.json`
-- `out/shorts/word-candidates-llm-top.qwen2.5-3b.full.json`
+- `out/shorts/word-candidates-llm-top.full.json`
 
 ## Subtitle Sync Support
 
@@ -184,6 +193,88 @@ Supporting scripts exist because subtitle timing quality directly affects extrac
 Current sync files:
 - `source_content/shingeki_no_kyojin/subs/sub-offsets.json`
 - `source_content/shingeki_no_kyojin/subs/sub-sync-db.json`
+
+How sync is meant to be used:
+- JP/EN subtitle sync is done once per anime, then persisted in JSON.
+- The intended per-anime artifacts are:
+  - `<anime>/subs/sub-offsets.json`
+  - `<anime>/subs/sub-sync-db.json`
+- For new anime, reuse the same scripts with explicit `--videosDir`, `--jpSubsDir`, `--enSubsDir`, `--offsetsFile`, and `--dbFile`.
+
+## Runtime And Vision Notes
+
+Current local `llama.cpp` situation:
+- The system binary at `/usr/local/bin/llama-cli` is not the one to trust for GPU use here.
+- The working Vulkan build is under:
+  - `/home/kaiyes/.openclaw/vendor/llama.cpp-shallow/build-vulkan/bin/llama-cli`
+  - `/home/kaiyes/.openclaw/vendor/llama.cpp-shallow/build-vulkan/bin/llama-server`
+- This Vulkan build sees the local AMD GPU as:
+  - `Vulkan0: AMD Radeon RX 590 Series`
+
+OpenClaw runtime:
+- OpenClaw is configured to use a local `llama.cpp` HTTP server at `http://127.0.0.1:18080/v1`.
+- The currently running server process uses:
+  - `llama-server`
+  - `--device Vulkan0`
+  - `--n-gpu-layers 99`
+- Current OpenClaw default text model is:
+  - `Qwen3.5 9B Q4_K_M (llama.cpp)`
+
+Important distinction:
+- `--avEval` is clip QA:
+  - Whisper audio agreement
+  - optional vision/OCR agreement
+- Subtitle sync is separate:
+  - `calibrate-sub-sync.js`
+  - `align-episode-subs.js`
+  - `align-all-episode-subs.js`
+
+## Multimodal Model Notes
+
+For `llama.cpp` vision/OCR, you need both:
+- the main `GGUF` model file
+- the matching `mmproj` file
+
+Local cache state checked in this workspace:
+- present:
+  - `~/.cache/llama.cpp/unsloth_Qwen3.5-2B-GGUF_Qwen3.5-2B-Q4_K_M.gguf`
+  - `~/.cache/llama.cpp/unsloth_Qwen3.5-2B-GGUF_mmproj-F16.gguf`
+  - `~/.cache/llama.cpp/unsloth_Qwen3.5-4B-GGUF_Qwen3.5-4B-Q4_K_M.gguf`
+  - `~/.cache/llama.cpp/unsloth_Qwen3.5-9B-GGUF_Qwen3.5-9B-Q4_K_M.gguf`
+- missing locally:
+  - `Qwen3.5 4B mmproj`
+  - `Qwen3.5 9B mmproj`
+
+Known Hugging Face `mmproj` locations:
+- Qwen3.5 4B:
+  - `mmproj-F16.gguf`
+  - https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/blob/main/mmproj-F16.gguf
+- Qwen3.5 9B:
+  - `mmproj-F16.gguf`
+  - https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/blob/main/mmproj-F16.gguf
+
+Observed smoke-test result:
+- The local 2B `GGUF + mmproj` pair is valid.
+- `llama.cpp` loads it as `text, vision`.
+- The main failure encountered was runtime/config:
+  - wrong binary (`/usr/local/bin/llama-cli`) had no GPU
+  - one OCR test also failed from too-small context size
+
+Current recommendation:
+- Use the Vulkan-built `llama.cpp` binaries from `.openclaw/vendor/.../build-vulkan/bin`.
+- Switch text rerank to `llama.cpp`.
+- For OCR/vision, use a proper multimodal pair:
+  - safest next target: `Qwen3.5 4B GGUF + mmproj`
+  - `9B` is possible too, but only after pulling its matching `mmproj`.
+
+Current repo AV defaults:
+- `npm run word:board:av`
+- `npm run shorts:av:one`
+
+These now target local `llama.cpp` vision with:
+- `Qwen3.5 4B Q4_K_M`
+- matching `mmproj`
+- Vulkan device `Vulkan0`
 
 ## What To Trust Right Now
 

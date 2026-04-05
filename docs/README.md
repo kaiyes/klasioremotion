@@ -12,6 +12,8 @@
   Rerank behavior, freeze policy, and recovery steps.
 - [`tools/word-curation-ui/README.md`](/home/kaiyes/projects/klasioremotion/tools/word-curation-ui/README.md)
   Manual curation UI usage.
+- [`docs/PIPELINE_ADVENTURE_LOG_2026-03.md`](/home/kaiyes/projects/klasioremotion/docs/PIPELINE_ADVENTURE_LOG_2026-03.md)
+  Deep log of March 2026 experiments, failures, fixes, and operational decisions.
 
 ## Archived Docs
 

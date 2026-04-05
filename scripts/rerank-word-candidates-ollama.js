@@ -14,15 +14,16 @@ const DEFAULT_DB_FILE = path.join(
 const DEFAULT_OUT_FILE = path.join(
   "out",
   "shorts",
-  "word-candidates-llm-top.qwen2.5-3b.full.json",
+  "word-candidates-llm-top.full.json",
 );
 
 function parseArgs(argv) {
   const args = {
     dbFile: DEFAULT_DB_FILE,
     outFile: DEFAULT_OUT_FILE,
-    model: "llama3.2:3b",
-    host: "http://127.0.0.1:11434",
+    backend: String(process.env.RERANK_BACKEND || "llamacpp").trim().toLowerCase(),
+    model: String(process.env.RERANK_MODEL || "qwen35-4b-q4km").trim(),
+    host: String(process.env.RERANK_HOST || "http://127.0.0.1:18080").trim(),
     topK: 5,
     maxCandidates: 50,
     llmTopN: 15,
@@ -72,6 +73,10 @@ function parseArgs(argv) {
         break;
       case "model":
         args.model = v;
+        takeNext();
+        break;
+      case "backend":
+        args.backend = String(v || "").trim().toLowerCase();
         takeNext();
         break;
       case "host":
@@ -250,14 +255,15 @@ Usage:
 
 What it does:
   - Reads word candidates DB
-  - Uses local Ollama model to pick best examples per word
+  - Uses local LLM backend to pick best examples per word
   - Writes progress after each word (resumable)
 
 Options:
   --dbFile <file>          Default: ${DEFAULT_DB_FILE}
   --outFile <file>         Default: ${DEFAULT_OUT_FILE}
-  --model <name>           Ollama model (default: llama3.2:3b)
-  --host <url>             Ollama host (default: http://127.0.0.1:11434)
+  --backend <name>         ollama|llamacpp (default: llamacpp)
+  --model <name>           Model name / alias (default: qwen35-4b-q4km)
+  --host <url>             Backend host (default: http://127.0.0.1:18080)
   --topK <n>               Top picks per word (default: 5)
   --maxCandidates <n>      Max candidates per word sent to LLM (default: 50)
   --llmTopN <n>            LLM tie-break shortlist size from heuristic rank (default: 15)
@@ -287,7 +293,7 @@ Options:
   --asrWorkDir <dir>       Temp/cached ASR artifacts (default: dissfiles/word-candidate-asr)
   --asrCacheFile <file>    JSON cache for ASR results (default: dissfiles/word-candidate-asr/cache.json)
   --printEvery <n>         Progress interval (default: 25)
-  --dryRun                 Skip Ollama calls, fallback to heuristic top-K
+  --dryRun                 Skip LLM calls, fallback to heuristic top-K
   --verbose                Verbose logs
 `.trim() + "\n",
   );
@@ -580,6 +586,23 @@ async function postOllamaJson({ url, body, signal }) {
   return res.json();
 }
 
+async function postJson({ url, body, signal, headers = {} }) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...headers,
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`HTTP ${res.status}: ${text.slice(0, 400)}`);
+  }
+  return res.json();
+}
+
 function stripAnsi(text) {
   return String(text || "").replace(
     // eslint-disable-next-line no-control-regex
@@ -657,6 +680,60 @@ async function callOllama({ host, model, prompt, timeoutSec, temperature }) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function callLlamaCpp({ host, model, prompt, timeoutSec, temperature }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.round(timeoutSec * 1000));
+  try {
+    const base = host.replace(/\/$/, "");
+    try {
+      const chat = await postJson({
+        url: `${base}/v1/chat/completions`,
+        body: {
+          model,
+          messages: [{ role: "user", content: prompt }],
+          temperature,
+          max_tokens: 1024,
+          stream: false,
+        },
+        signal: controller.signal,
+      });
+      const text = String(chat?.choices?.[0]?.message?.content || "").trim();
+      if (text) return text;
+      throw new Error("chat completions returned empty content");
+    } catch (err) {
+      const msg = String(err?.message || err);
+      if (!/404|not found|unsupported|unknown/i.test(msg)) {
+        throw err;
+      }
+    }
+
+    const completion = await postJson({
+      url: `${base}/v1/completions`,
+      body: {
+        model,
+        prompt,
+        temperature,
+        max_tokens: 1024,
+        stream: false,
+      },
+      signal: controller.signal,
+    });
+    const text = String(completion?.choices?.[0]?.text || "").trim();
+    if (!text) throw new Error("Empty llama.cpp completion response.");
+    return text;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function callLlm({ backend, host, model, prompt, timeoutSec, temperature }) {
+  const kind = String(backend || "ollama").trim().toLowerCase();
+  if (kind === "llamacpp") {
+    return callLlamaCpp({ host, model, prompt, timeoutSec, temperature });
+  }
+  return callOllama({ host, model, prompt, timeoutSec, temperature });
 }
 
 function msToFfmpegTime(msRaw) {
@@ -918,9 +995,10 @@ function buildOutputSkeleton(args, sourceDb, targetWords) {
     meta: {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      generator: "rerank-word-candidates-ollama.v1",
+      generator: "rerank-word-candidates-llm.v2",
       sourceDbFile: path.resolve(args.dbFile),
       sourceDbCreatedAt: sourceDb?.meta?.createdAt ?? null,
+      backend: args.backend,
       model: args.model,
       host: args.host,
       topK: args.topK,
@@ -1245,7 +1323,8 @@ async function processWord({ args, sourceWord, outMap, asrCache }) {
     let lastErr = null;
     for (let attempt = 0; attempt <= args.retries; attempt++) {
       try {
-        const rawText = await callOllama({
+        const rawText = await callLlm({
+          backend: args.backend,
           host: args.host,
           model: args.model,
           prompt,
