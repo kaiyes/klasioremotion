@@ -1,8 +1,6 @@
-# Klasio Remotion
+# Klasio Anime Shorts
 
 This repo currently operates as a Node.js + ffmpeg anime vocab short pipeline.
-
-Remotion is still kept in the repo for the talking-head auto-short system, but it is not the main production path right now.
 
 ## Start Here
 
@@ -54,13 +52,4 @@ What the pipeline does:
 - `scripts/make-vertical-shorts-clean.js`
 - `scripts/word-curate.js`
 
-## Remotion Status
-
-Remotion is intentionally still present for the separate auto-short workflow.
-
-Relevant files:
-- `src/Root.tsx`
-- `src/auto-short/*`
-- `scripts/generate-auto-short-plan.js`
-
-That path is secondary for now. The anime word pipeline above is the current focus.
+The anime word pipeline above is the repo focus.

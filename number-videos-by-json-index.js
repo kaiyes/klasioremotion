@@ -175,7 +175,7 @@ function main() {
 
   if (!wordsFileToUse) {
     throw new Error(
-      "Could not find a words file. Pass --wordsFile explicitly or run this under the remotionVideos repo.",
+      "Could not find a words file. Pass --wordsFile explicitly or run this from the repo root.",
     );
   }
 

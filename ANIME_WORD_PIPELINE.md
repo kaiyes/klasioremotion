@@ -2,7 +2,7 @@
 
 Current scope: Node.js + ffmpeg anime vocab short generation.
 
-This file is the at-a-glance source of truth for the current non-Remotion workflow.
+This file is the at-a-glance source of truth for the current workflow.
 
 Deep experiment log:
 - [`docs/PIPELINE_ADVENTURE_LOG_2026-03.md`](/home/kaiyes/projects/klasioremotion/docs/PIPELINE_ADVENTURE_LOG_2026-03.md)
@@ -137,7 +137,7 @@ Important note:
 Renderer:
 - [`scripts/make-vertical-shorts-clean.js`](/home/kaiyes/projects/klasioremotion/scripts/make-vertical-shorts-clean.js)
 
-This is ffmpeg-based, not Remotion-based.
+This renderer is ffmpeg-based.
 
 What it builds:
 - `1080x1920` vertical short

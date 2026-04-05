@@ -337,7 +337,7 @@ npm run -s align-episode-subs -- --episode s4e30 --enSubsDir source_content/shin
 - Reduce optional flags in everyday use.
 
 ## Repo Direction
-- Current pipeline is mainly subtitle/audio/ffmpeg orchestration with optional Remotion overlays.
+- Current pipeline is mainly subtitle/audio/ffmpeg orchestration.
 - Recommended next step: split this pipeline into a dedicated repo (or dedicated package folder) so it does not conflict with other workflows in this repo.
 
 ## Git / Asset Notes

@@ -19,8 +19,6 @@
 
 - [`docs/archive/SUMMARY.md`](/home/kaiyes/projects/klasioremotion/docs/archive/SUMMARY.md)
   Historical snapshot, implementation log, and handoff notes.
-- [`docs/archive/AUTO_SHORT_THREAD_HANDOFF.md`](/home/kaiyes/projects/klasioremotion/docs/archive/AUTO_SHORT_THREAD_HANDOFF.md)
-  Historical Remotion auto-short thread handoff.
 
 ## Policy
 

@@ -1,34 +1,11 @@
 {
-  "name": "remotionVideos",
+  "name": "klasioremotion",
   "version": "1.0.0",
-  "description": "My Remotion video",
+  "description": "Node.js + ffmpeg anime vocabulary shorts pipeline",
   "repository": {},
   "license": "UNLICENSED",
   "private": true,
-  "dependencies": {
-    "@remotion/cli": "4.0.410",
-    "react": "19.2.3",
-    "react-dom": "19.2.3",
-    "remotion": "4.0.410",
-    "@remotion/tailwind-v4": "4.0.410",
-    "tailwindcss": "4.0.0"
-  },
-  "devDependencies": {
-    "@remotion/eslint-config-flat": "4.0.410",
-    "@types/react": "19.2.7",
-    "@types/web": "0.0.166",
-    "eslint": "9.19.0",
-    "prettier": "3.6.0",
-    "typescript": "5.9.3"
-  },
   "scripts": {
-    "dev": "remotion studio",
-    "build": "remotion bundle",
-    "upgrade": "remotion upgrade",
-    "lint": "eslint src && tsc",
-    "auto-short:plan": "node scripts/generate-auto-short-plan.js",
-    "auto-short:render": "remotion render AutoShort out/auto-short/auto-short.mp4",
-    "auto-short:all": "npm run auto-short:plan -- --input \"src/make bank.mp4\" && npm run auto-short:render",
     "extract-clips": "node scripts/extract-clips.js",
     "batch-extract": "node scripts/batch-extract.js",
     "vertical-shorts": "node scripts/make-vertical-shorts.js",
@@ -123,6 +100,7 @@
     "family:audio:all": ".venv-corpus/bin/python scripts/cache-family-audio-all.py",
     "family:audio:all:opm": ".venv-corpus/bin/python scripts/cache-family-audio-all.py --subsDir source_content/one_punch/subs/japanese --enSubsDir source_content/one_punch/subs/english_embedded --videosDir source_content/one_punch/videos --cacheDir out/family_audio_cache_one_punch --outDir out/shorts_work_one_punch --outputDir out/testEval --doneDir out/family_audio_cache_one_punch/_done --avWhisperModel /home/kaiyes/projects/whisper.cpp/models/ggml-base.bin --avWhisperLanguage Japanese",
     "family:render:all": ".venv-corpus/bin/python scripts/render-family-cache-all.py --audioDoneDir out/family_audio_cache/_done --renderDoneDir out/family_rendered/_done --cacheDir out/family_audio_cache --outDir out/shorts_work --outputDir out/shorts",
+    "family:render:all:instagram": ".venv-corpus/bin/python scripts/render-family-cache-all.py --audioDoneDir out/family_audio_cache/_done --renderDoneDir out/family_rendered_instagram/_done --cacheDir out/family_audio_cache --outDir out/shorts_work_instagram --outputDir out/shorts_instagram --layout instagram",
     "family:render:all:opm": ".venv-corpus/bin/python scripts/render-family-cache-all.py --audioDoneDir out/family_audio_cache_one_punch/_done --renderDoneDir out/family_rendered_one_punch/_done --subsDir source_content/one_punch/subs/japanese --enSubsDir source_content/one_punch/subs/english_embedded --videosDir source_content/one_punch/videos --cacheDir out/family_audio_cache_one_punch --outDir out/shorts_work_one_punch --outputDir out/shorts",
     "family:render:base": ".venv-corpus/bin/python scripts/render-family-cache-all.py --audioDoneDir out/family_audio_cache/_done --renderDoneDir out/family_rendered_base/_done --cacheDir out/family_audio_cache --outDir out/shorts_work --outputDir out/shorts --onlyKinds base",
     "family:render:base:opm": ".venv-corpus/bin/python scripts/render-family-cache-all.py --audioDoneDir out/family_audio_cache_one_punch/_done --renderDoneDir out/family_rendered_base_one_punch/_done --subsDir source_content/one_punch/subs/japanese --enSubsDir source_content/one_punch/subs/english_embedded --videosDir source_content/one_punch/videos --cacheDir out/family_audio_cache_one_punch --outDir out/shorts_work_one_punch --outputDir out/shorts --onlyKinds base",
@@ -131,6 +109,7 @@
     "basic:full:opm": "node scripts/auto-curate-word-shorts.js --wordsFile source_content/all_anime_top_2000.match.first2000.json --subsDir source_content/one_punch/subs/japanese --enSubsDir source_content/one_punch/subs/english_embedded --videosDir source_content/one_punch/videos --mode line --enLinePolicy best --topK 5 --maxPerWord 50 --maxCandidates 50 --backend llamacpp --host http://127.0.0.1:18080 --model qwen35-4b-q4km --resume --outRoot out/word-auto-one_punch --renderOutDir out/shorts",
     "basic:render:opm": "node scripts/auto-curate-word-shorts.js --wordsFile source_content/all_anime_top_2000.match.first2000.json --subsDir source_content/one_punch/subs/japanese --enSubsDir source_content/one_punch/subs/english_embedded --videosDir source_content/one_punch/videos --mode line --enLinePolicy best --topK 5 --maxPerWord 50 --maxCandidates 50 --backend llamacpp --host http://127.0.0.1:18080 --model qwen35-4b-q4km --resume --skipBuild --skipRerank --outRoot out/word-auto-one_punch --renderOutDir out/shorts",
     "family:render:one": "node scripts/render-family-cache-one.js",
+    "family:render:one:instagram": "node scripts/render-family-cache-one.js --cacheDir out/family_audio_cache --outDir out/shorts_work_instagram --outputDir out/shorts_instagram --layout instagram",
     "family:conj:meanings": ".venv-corpus/bin/python scripts/generate-family-conjugation-meanings.py",
     "calibrate-sub-sync:opm": "node scripts/calibrate-sub-sync.js --videosDir source_content/one_punch/videos --subsDir source_content/one_punch/subs/japanese --offsetsFile source_content/one_punch/subs/sub-offsets.json",
     "align-all-episode-subs:opm": "node scripts/align-all-episode-subs.js --videosDir source_content/one_punch/videos --jpSubsDir source_content/one_punch/subs/japanese --enSubsDir source_content/one_punch/subs/english_embedded --offsetsFile source_content/one_punch/subs/sub-offsets.json --dbFile source_content/one_punch/subs/sub-sync-db.json"

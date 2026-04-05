@@ -770,18 +770,49 @@ function buildSegmentOverlaySvg({
   const videoHeight = (width * 9) / 16;
   const videoBottom = videoTop + videoHeight;
 
-  const headerRectH = (isInstagram ? 350 : 470) * s;
-  const headerRectW = width * (isInstagram ? 0.66 : 0.9);
+  const headerRectH = (isInstagram ? 236 : 470) * s;
+  const headerRectW = width * (isInstagram ? 0.72 : 0.9);
   const headerRectX = (width - headerRectW) / 2;
-  const headerRectY = Math.max(36 * s, videoTop - headerRectH - (isInstagram ? 36 : 116) * s);
-  const labelY = headerRectY + (isInstagram ? 60 : 86) * s;
-  const readingY = labelY + (isInstagram ? 54 : 82) * s;
-  const romajiY = readingY + (isInstagram ? 44 : 58) * s;
-  const kanjiY = romajiY + (isInstagram ? 78 : 110) * s;
-  const meaningY = kanjiY + (isInstagram ? 74 : 96) * s;
+  const headerRectY = Math.max(
+    (isInstagram ? 292 : 36) * s,
+    videoTop - headerRectH - (isInstagram ? 30 : 116) * s,
+  );
+  const labelY = headerRectY + (isInstagram ? 0 : 86) * s;
+  const readingY = labelY + (isInstagram ? 0 : 82) * s;
+  const romajiY = readingY + (isInstagram ? 0 : 58) * s;
+  const kanjiY = romajiY + (isInstagram ? 0 : 110) * s;
+  const meaningY = kanjiY + (isInstagram ? 0 : 96) * s;
+  const cardPad = (isInstagram ? 28 : 0) * s;
+  const instagramLabelY = headerRectY + 62 * s;
+  const cardRowY = headerRectY + headerRectH * 0.60;
+  const cardCenterX = headerRectX + headerRectW / 2;
+  const cardThirdW = headerRectW / 3;
+  const cardLeftCenterX = headerRectX + cardThirdW / 2;
+  const cardRightCenterX = headerRectX + cardThirdW * 2.5;
+  const cardLeftText = isInstagram ? queryRomaji || "" : "";
+  const cardRightText = isInstagram ? queryReading || "" : "";
+  const cardMeaningText = isInstagram ? queryMeaning || "Japanese in context" : "";
+  const leftUnits = Math.max(1, measureUnits(cardLeftText));
+  const rightUnits = Math.max(1, measureUnits(cardRightText));
+  const meaningUnits = Math.max(1, measureUnits(cardMeaningText));
+  const instagramLeftSize = isInstagram
+    ? Math.max(22 * s, Math.min(34 * s, (cardThirdW - cardPad * 1.6) / leftUnits))
+    : 0;
+  const instagramRightSize = isInstagram
+    ? Math.max(22 * s, Math.min(34 * s, (cardThirdW - cardPad * 1.6) / rightUnits))
+    : 0;
+  const queryUnits = Math.max(1, measureUnits(query));
+  const instagramKanjiSize = isInstagram
+    ? Math.max(48 * s, Math.min(84 * s, (cardThirdW - cardPad * 1.2) / queryUnits))
+    : 0;
+  const instagramKanjiY = cardRowY + 6 * s;
+  const instagramMeaningSize = isInstagram
+    ? Math.max(18 * s, Math.min(28 * s, (cardThirdW * 1.5) / meaningUnits))
+    : 0;
+  const instagramMeaningY = instagramKanjiY + 42 * s;
 
-  const subtitleTop = isInstagram ? videoBottom - 210 * s : videoBottom + 26 * s;
-  const subtitleBottom = isInstagram ? videoBottom - 26 * s : height - 42 * s;
+  const subtitleTop = isInstagram ? videoBottom + 18 * s : videoBottom + 26 * s;
+  const subtitleBottom = isInstagram ? height - 40 * s : height - 42 * s;
   const maxTextWidth = width - margin * 2;
   const jpRaw = jpTokens.map((t) => t.surface || "").join("");
   const jpUnits = Math.max(1, measureUnits(jpRaw));
@@ -847,6 +878,19 @@ function buildSegmentOverlaySvg({
   const qrSize = 86 * s;
   const qrX = brandX + brandW - qrSize - brandPad;
   const qrY = brandY + brandPad;
+  const videoBrandW = 206 * s;
+  const videoBrandH = 96 * s;
+  const videoBrandX = width - margin * 0.72 - videoBrandW;
+  const videoBrandY = videoBottom - videoBrandH - 16 * s;
+  const videoBrandPadX = 12 * s;
+  const videoBrandPadY = 10 * s;
+  const videoLogoSize = 34 * s;
+  const videoLogoX = videoBrandX + videoBrandPadX;
+  const videoLogoY = videoBrandY + videoBrandPadY;
+  const videoBrandTextX = videoLogoX + videoLogoSize + 10 * s;
+  const videoBrandTitleY = videoBrandY + 31 * s;
+  const videoBrandSubY1 = videoBrandTitleY + 19 * s;
+  const videoBrandSubY2 = videoBrandSubY1 + 16 * s;
 
   const jpText = jpLayout
     .map(
@@ -886,7 +930,27 @@ function buildSegmentOverlaySvg({
   `;
   const subtitleBackdrop = isInstagram
     ? `
-  <rect x="${margin * 0.55}" y="${videoBottom - 250 * s}" width="${width - margin * 1.1}" height="${232 * s}" rx="${24 * s}" ry="${24 * s}" fill="rgba(0,0,0,0.68)"/>
+  <rect x="${margin * 0.55}" y="${videoBottom + 8 * s}" width="${width - margin * 1.1}" height="${height - (videoBottom + 8 * s) - 24 * s}" rx="${24 * s}" ry="${24 * s}" fill="rgba(0,0,0,0.68)"/>
+  `
+    : "";
+  const videoBrandBug = isInstagram
+    ? `
+  <rect x="${videoBrandX}" y="${videoBrandY}" width="${videoBrandW}" height="${videoBrandH}" rx="${18 * s}" ry="${18 * s}" fill="rgba(0,0,0,0.46)" stroke="rgba(255,255,255,0.14)" stroke-width="${1.5 * s}"/>
+  ${logoDataUri ? `<image x="${videoLogoX}" y="${videoLogoY}" width="${videoLogoSize}" height="${videoLogoSize}" href="${logoDataUri}" preserveAspectRatio="xMidYMid meet"/>` : ""}
+  <text x="${videoBrandTextX}" y="${videoBrandTitleY}" text-anchor="start" font-family="${fontEN}" font-size="${19 * s}" font-weight="800" fill="#ffffff">Bundai</text>
+  <text x="${videoBrandTextX}" y="${videoBrandSubY1}" text-anchor="start" font-family="${fontEN}" font-size="${12 * s}" font-weight="700" fill="#dfeee5">learn Japanese</text>
+  <text x="${videoBrandTextX}" y="${videoBrandSubY2}" text-anchor="start" font-family="${fontEN}" font-size="${12 * s}" font-weight="700" fill="#dfeee5">with anime</text>
+  `
+    : "";
+  const instagramMetaBlock = isInstagram
+    ? `
+  <text x="50%" y="${instagramLabelY}" text-anchor="middle" font-family="${fontEN}" font-size="${34 * s}" font-weight="900" fill="#1e3a34">Anime word of the day</text>
+  <text x="${cardLeftCenterX}" y="${cardRowY}" dominant-baseline="middle" text-anchor="middle" font-family="${fontEN}" font-size="${instagramLeftSize}" font-weight="800" fill="#1e3a34">${svgEscape(cardLeftText)}</text>
+  <text x="${cardRightCenterX}" y="${cardRowY}" dominant-baseline="middle" text-anchor="middle" font-family="${fontJP}" font-size="${instagramRightSize}" font-weight="800" fill="#1e3a34">${svgEscape(cardRightText)}</text>
+  <line x1="${headerRectX + cardThirdW}" y1="${cardRowY - 42 * s}" x2="${headerRectX + cardThirdW}" y2="${cardRowY + 42 * s}" stroke="rgba(30,58,52,0.18)" stroke-width="${2 * s}"/>
+  <line x1="${headerRectX + cardThirdW * 2}" y1="${cardRowY - 42 * s}" x2="${headerRectX + cardThirdW * 2}" y2="${cardRowY + 42 * s}" stroke="rgba(30,58,52,0.18)" stroke-width="${2 * s}"/>
+  <text x="${cardCenterX}" y="${instagramKanjiY}" text-anchor="middle" font-family="${fontJP}" font-size="${instagramKanjiSize}" font-weight="800" fill="#ffd900" stroke="#000000" stroke-width="${4 * s}" paint-order="stroke fill">${svgEscape(query)}</text>
+  <text x="${cardCenterX}" y="${instagramMeaningY}" text-anchor="middle" font-family="${fontEN}" font-size="${instagramMeaningSize}" font-weight="800" fill="#1e3a34">${svgEscape(cardMeaningText)}</text>
   `
     : "";
 
@@ -894,12 +958,17 @@ function buildSegmentOverlaySvg({
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
   <rect width="100%" height="100%" fill="transparent"/>
   <rect x="${headerRectX}" y="${headerRectY}" width="${headerRectW}" height="${headerRectH}" rx="${24 * s}" ry="${24 * s}" fill="rgba(198,233,212,0.92)"/>
-  <text x="50%" y="${labelY}" text-anchor="middle" font-family="${fontEN}" font-size="${(isInstagram ? 28 : 42) * s}" font-weight="800" fill="#1e3a34">Anime word of the day</text>
-  <text x="50%" y="${readingY}" text-anchor="middle" font-family="${fontJP}" font-size="${(isInstagram ? 42 : 54) * s}" font-weight="700" fill="#1e3a34">${svgEscape(queryReading)}</text>
-  <text x="50%" y="${romajiY}" text-anchor="middle" font-family="${fontEN}" font-size="${(isInstagram ? 24 : 32) * s}" font-weight="700" fill="#1e3a34">${svgEscape(queryRomaji)}</text>
-  <text x="50%" y="${kanjiY}" text-anchor="middle" font-family="${fontJP}" font-size="${(isInstagram ? 96 : 126) * s}" font-weight="800" fill="#ffd900" stroke="#000000" stroke-width="${4 * s}" paint-order="stroke fill">${svgEscape(query)}</text>
-  <text x="50%" y="${meaningY}" text-anchor="middle" font-family="${fontEN}" font-size="${(isInstagram ? 34 : 48) * s}" font-weight="800" fill="#1e3a34">${svgEscape(queryMeaning || "Japanese in context")}</text>
+  ${
+    isInstagram
+      ? instagramMetaBlock
+      : `<text x="50%" y="${labelY}" text-anchor="middle" font-family="${fontEN}" font-size="${42 * s}" font-weight="800" fill="#1e3a34">Anime word of the day</text>
+  <text x="50%" y="${readingY}" text-anchor="middle" font-family="${fontJP}" font-size="${54 * s}" font-weight="700" fill="#1e3a34">${svgEscape(queryReading)}</text>
+  <text x="50%" y="${romajiY}" text-anchor="middle" font-family="${fontEN}" font-size="${32 * s}" font-weight="700" fill="#1e3a34">${svgEscape(queryRomaji)}</text>
+  <text x="50%" y="${kanjiY}" text-anchor="middle" font-family="${fontJP}" font-size="${126 * s}" font-weight="800" fill="#ffd900" stroke="#000000" stroke-width="${4 * s}" paint-order="stroke fill">${svgEscape(query)}</text>
+  <text x="50%" y="${meaningY}" text-anchor="middle" font-family="${fontEN}" font-size="${48 * s}" font-weight="800" fill="#1e3a34">${svgEscape(queryMeaning || "Japanese in context")}</text>`
+  }
   ${brandBlock}
+  ${videoBrandBug}
   ${subtitleBackdrop}
   ${enText}
   ${furiText}
