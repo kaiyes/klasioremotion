@@ -25,3 +25,14 @@ source_content/jujutsu_kaisen/
 source_content/jujutsu_kaisen_original_ass/
 
 public/auto-short/videos/*.mp4
+
+# Local/generated image-short assets and tooling.
+public/image-shorts/
+src/image-shorts/
+scripts/generate-image-short-audio.js
+scripts/generate-image-short-plan.js
+scripts/render-category-shorts.js
+scripts/sync-bundai-images.js
+tools/word-curation-ui/clips.css
+tools/word-curation-ui/clips.html
+tools/word-curation-ui/clips.js
