@@ -132,7 +132,8 @@ function parseArgs(argv) {
     avLlamaCtxSize: Number(process.env.AV_LLAMA_CTX_SIZE || 4096),
     avLlamaGpuLayers: Number(process.env.AV_LLAMA_GPU_LAYERS || 99),
     avQueryOnly: true,
-    avMaxSwapCandidates: 12,
+    avPoolLimit: 25,
+    avMaxSwapCandidates: 25,
     avMinAsrSim: 0.5,
     avMinVisionSim: 0.42,
     avFailPolicy: "balanced", // balanced | strict
@@ -310,6 +311,10 @@ function parseArgs(argv) {
         break;
       case "noAvQueryOnly":
         args.avQueryOnly = false;
+        break;
+      case "avPoolLimit":
+        args.avPoolLimit = Number(value);
+        takeNext();
         break;
       case "avMaxSwapCandidates":
         args.avMaxSwapCandidates = Number(value);
@@ -547,7 +552,8 @@ Options:
   --avLlamaGpuLayers    llama.cpp GPU layers (default: 99)
   --avQueryOnly         AV gate mode: only require target-word presence in Whisper audio (default)
   --noAvQueryOnly       Disable query-only mode (also require JP similarity vs Whisper)
-  --avMaxSwapCandidates Max candidates to AV-check while replacing one bad slot (default: 12)
+  --avPoolLimit         Max top-ranked candidates considered for AV replacement search (default: 25)
+  --avMaxSwapCandidates Max candidates to AV-check while replacing one bad slot (default: 25)
   --avMinAsrSim         Min JP similarity candidate vs Whisper (default: 0.5)
   --avMinVisionSim      Min JP similarity candidate vs vision OCR (default: 0.42)
   --avFailPolicy        AV fail policy: balanced|strict (default: balanced)
@@ -4759,7 +4765,11 @@ async function main() {
   }
 
   if (args.avEval) {
-    const avGated = await applyAvEvalAndAutoReplace(selected, pool, gateArgs, gateCtx);
+    const avPool =
+      Number.isFinite(Number(args.avPoolLimit)) && Number(args.avPoolLimit) > 0
+        ? pool.slice(0, Number(args.avPoolLimit))
+        : pool;
+    const avGated = await applyAvEvalAndAutoReplace(selected, avPool, gateArgs, gateCtx);
     selected = avGated.selected;
     gateAudit.push(...avGated.audit);
   }

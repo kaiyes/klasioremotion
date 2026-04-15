@@ -59,11 +59,18 @@ function parseArgs(argv) {
     workDir: DEFAULT_WORK_DIR,
     mode: "sentence",
     rank: true,
+    selectPerWord: 10,
     prePadMs: 350,
     postPadMs: 650,
     minClipMs: 1200,
     maxClipMs: 3200,
     longPolicy: "shrink",
+    avEval: false,
+    avWhisperModel: "",
+    avWhisperLanguage: "",
+    avQueryOnly: true,
+    avPoolLimit: 25,
+    avMaxSwapCandidates: 25,
     maxPerWord: 0,
     printEvery: 25,
     continueOnError: true,
@@ -131,6 +138,10 @@ function parseArgs(argv) {
       case "no-rank":
         args.rank = false;
         break;
+      case "selectPerWord":
+        args.selectPerWord = Number(v);
+        takeNext();
+        break;
       case "prePadMs":
         args.prePadMs = Number(v);
         takeNext();
@@ -149,6 +160,34 @@ function parseArgs(argv) {
         break;
       case "longPolicy":
         args.longPolicy = String(v || "").trim().toLowerCase();
+        takeNext();
+        break;
+      case "avEval":
+        args.avEval = true;
+        break;
+      case "no-avEval":
+        args.avEval = false;
+        break;
+      case "avWhisperModel":
+        args.avWhisperModel = String(v || "").trim();
+        takeNext();
+        break;
+      case "avWhisperLanguage":
+        args.avWhisperLanguage = String(v || "").trim();
+        takeNext();
+        break;
+      case "avQueryOnly":
+        args.avQueryOnly = true;
+        break;
+      case "noAvQueryOnly":
+        args.avQueryOnly = false;
+        break;
+      case "avPoolLimit":
+        args.avPoolLimit = Number(v);
+        takeNext();
+        break;
+      case "avMaxSwapCandidates":
+        args.avMaxSwapCandidates = Number(v);
         takeNext();
         break;
       case "maxPerWord":
@@ -205,6 +244,9 @@ function parseArgs(argv) {
   if (!["skip", "shrink"].includes(args.longPolicy)) {
     throw new Error('--longPolicy must be "skip" or "shrink".');
   }
+  if (!Number.isFinite(args.selectPerWord) || args.selectPerWord <= 0) {
+    throw new Error("--selectPerWord must be > 0.");
+  }
   return args;
 }
 
@@ -232,11 +274,19 @@ Options:
   --workDir <dir>           Temp json dir (default: ${DEFAULT_WORK_DIR})
   --mode <line|sentence>    Match mode passed to extract-clips (default: sentence)
   --rank / --no-rank        Candidate ranking toggle (default: rank)
+  --selectPerWord <n>       Number of selected clips to keep per word (default: 10)
   --prePadMs <n>            Extra context before match (default: 350)
   --postPadMs <n>           Extra context after match (default: 650)
   --minClipMs <n>           Minimum candidate duration (default: 1200)
   --maxClipMs <n>           Maximum candidate duration (default: 3200)
   --longPolicy <p>          skip|shrink for long clips (default: shrink)
+  --avEval                  Enable audio/video evaluator in extract-clips
+  --avWhisperModel <name>   Whisper model for AV evaluator
+  --avWhisperLanguage <x>   Whisper language for AV evaluator
+  --avQueryOnly             Require only target-word presence in Whisper audio (default)
+  --noAvQueryOnly           Also require JP similarity vs Whisper
+  --avPoolLimit <n>         Max top-ranked candidates considered for AV replacement search (default: 25)
+  --avMaxSwapCandidates <n> Max deeper replacement AV checks per bad slot (default: 25)
   --maxPerWord <n>          Keep at most N candidates per word (default: 0 = all)
   --printEvery <n>          Progress print interval (default: 25)
   --continueOnError         Keep going when a word fails (default: on)
@@ -260,7 +310,9 @@ function readJson(filePath) {
 function writeJson(filePath, value) {
   const abs = path.resolve(filePath);
   ensureDir(path.dirname(abs));
-  fs.writeFileSync(abs, JSON.stringify(value, null, 2));
+  const tmp = `${abs}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
+  fs.renameSync(tmp, abs);
 }
 
 function normalizeDbPayload(raw) {
@@ -324,6 +376,26 @@ function recomputeSummary(words) {
     missingWords,
     errorWords,
     totalCandidates,
+  };
+}
+
+function buildDbSnapshot({
+  existingWordOrder,
+  processedWords,
+  outMap,
+  db,
+}) {
+  const finalOrder = mergeWordOrder(existingWordOrder, processedWords);
+  const words = finalOrder.map((w) => outMap.get(w)).filter(Boolean);
+  return {
+    ...db,
+    words,
+    summary: recomputeSummary(words),
+    meta: {
+      ...db.meta,
+      processedCount: words.length,
+      updatedAt: new Date().toISOString(),
+    },
   };
 }
 
@@ -415,7 +487,7 @@ function runExtractClips(word, args, tmpOutPath) {
     "--longPolicy",
     String(args.longPolicy),
     "--limit",
-    "1",
+    String(args.selectPerWord),
     "--dryRun",
     "--candidatesOut",
     tmpOutPath,
@@ -425,6 +497,17 @@ function runExtractClips(word, args, tmpOutPath) {
   if (args.subOffsetsFile) cli.push("--subOffsetsFile", args.subOffsetsFile);
   else cli.push("--noSubOffsetsFile");
   if (args.rank) cli.push("--rank");
+  if (args.avEval) cli.push("--avEval");
+  if (args.avWhisperModel) cli.push("--avWhisperModel", args.avWhisperModel);
+  if (args.avWhisperLanguage) cli.push("--avWhisperLanguage", args.avWhisperLanguage);
+  if (args.avQueryOnly) cli.push("--avQueryOnly");
+  else cli.push("--noAvQueryOnly");
+  if (Number.isFinite(args.avPoolLimit) && args.avPoolLimit > 0) {
+    cli.push("--avPoolLimit", String(args.avPoolLimit));
+  }
+  if (Number.isFinite(args.avMaxSwapCandidates) && args.avMaxSwapCandidates > 0) {
+    cli.push("--avMaxSwapCandidates", String(args.avMaxSwapCandidates));
+  }
   if (args.verbose) cli.push("--verbose");
 
   const res = spawnSync(process.execPath, cli, {
@@ -452,6 +535,8 @@ function main() {
   const existing = normalizeDbPayload(existingRaw);
   const existingWordOrder = existing?.words?.map((rec) => String(rec?.word || "").trim()) || [];
   const outMap = buildWordMap(existing?.words || []);
+  const requestedWords = words.map((x) => x.word);
+  const resumableWords = new Set(existingWordOrder.filter((word) => requestedWords.includes(word)));
 
   const db = {
     meta: {
@@ -469,6 +554,13 @@ function main() {
       subOffsetsFile: args.subOffsetsFile ? path.resolve(args.subOffsetsFile) : null,
       mode: args.mode,
       rank: args.rank,
+      selectPerWord: args.selectPerWord,
+      avEval: args.avEval,
+      avWhisperModel: args.avWhisperModel || null,
+      avWhisperLanguage: args.avWhisperLanguage || null,
+      avQueryOnly: args.avQueryOnly,
+      avPoolLimit: args.avPoolLimit,
+      avMaxSwapCandidates: args.avMaxSwapCandidates,
       maxPerWord: args.maxPerWord,
     },
     summary: existing?.summary || {
@@ -481,9 +573,29 @@ function main() {
     words: [],
   };
 
+  if (resumableWords.size > 0) {
+    console.log(
+      `Resuming from existing DB: skipping ${resumableWords.size} previously processed word(s).`,
+    );
+  }
+
   for (let i = 0; i < words.length; i++) {
     const entry = words[i];
     const word = entry.word;
+    if (args.resume && outMap.has(word)) {
+      const existingRec = outMap.get(word);
+      if (
+        args.verbose ||
+        i === 0 ||
+        i === words.length - 1 ||
+        (args.printEvery > 0 && (i + 1) % args.printEvery === 0)
+      ) {
+        console.log(
+          `[${i + 1}/${words.length}] ${word} -> skip=resume cands=${existingRec?.candidateCount || existingRec?.candidates?.length || 0} missing=${existingRec?.missing ? "yes" : "no"} error=${existingRec?.error ? "yes" : "no"}`,
+        );
+      }
+      continue;
+    }
     const tmpOutPath = path.join(
       args.workDir,
       `${String(i + 1).padStart(5, "0")}_${hashWord(word)}.json`,
@@ -514,15 +626,15 @@ function main() {
       };
       if (!args.continueOnError) {
         outMap.set(word, wordRec);
-        const partialOrder = mergeWordOrder(
-          existingWordOrder,
-          words.map((x) => x.word),
+        writeJson(
+          args.outFile,
+          buildDbSnapshot({
+            existingWordOrder,
+            processedWords: requestedWords,
+            outMap,
+            db,
+          }),
         );
-        db.words = partialOrder.map((w) => outMap.get(w)).filter(Boolean);
-        db.summary = recomputeSummary(db.words);
-        db.meta.processedCount = db.words.length;
-        db.meta.updatedAt = new Date().toISOString();
-        writeJson(args.outFile, db);
         throw new Error(`Failed on word "${word}": ${err}`);
       }
     } else {
@@ -550,6 +662,15 @@ function main() {
     }
 
     outMap.set(word, wordRec);
+    writeJson(
+      args.outFile,
+      buildDbSnapshot({
+        existingWordOrder,
+        processedWords: requestedWords,
+        outMap,
+        db,
+      }),
+    );
 
     if (!args.keepTmp && fs.existsSync(tmpOutPath)) {
       fs.rmSync(tmpOutPath, { force: true });
@@ -566,20 +687,17 @@ function main() {
     }
   }
 
-  const finalOrder = mergeWordOrder(
+  const finalDb = buildDbSnapshot({
     existingWordOrder,
-    words.map((x) => x.word),
-  );
-  db.words = finalOrder.map((w) => outMap.get(w)).filter(Boolean);
-  db.summary = recomputeSummary(db.words);
-  db.meta.processedCount = db.words.length;
-  db.meta.updatedAt = new Date().toISOString();
-
-  writeJson(args.outFile, db);
+    processedWords: requestedWords,
+    outMap,
+    db,
+  });
+  writeJson(args.outFile, finalDb);
   console.log("");
   console.log(`Done. DB written to: ${path.resolve(args.outFile)}`);
   console.log(
-    `Summary: words=${db.summary.totalWords} ok=${db.summary.okWords} missing=${db.summary.missingWords} errors=${db.summary.errorWords} candidates=${db.summary.totalCandidates}`,
+    `Summary: words=${finalDb.summary.totalWords} ok=${finalDb.summary.okWords} missing=${finalDb.summary.missingWords} errors=${finalDb.summary.errorWords} candidates=${finalDb.summary.totalCandidates}`,
   );
 }
 
