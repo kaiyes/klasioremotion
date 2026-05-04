@@ -51,6 +51,7 @@ const DEFAULTS = {
   allowWeak: false,
   includeQr: true,
   appendEndCard: true,
+  audioLang: "jpn",
   resume: true,
   force: false,
   decorate: false,
@@ -327,6 +328,9 @@ function parseArgs(argv) {
         break;
       case "noEndCard":
         args.appendEndCard = false;
+        break;
+      case "audioLang":
+        args.audioLang = String(v || "").trim();
         break;
       case "resume":
         args.resume = true;
@@ -837,6 +841,7 @@ function buildVerticalShortCli(args, outRoot, word, picks, opts = {}) {
   if (!args.appendEndCard) cli.push("--noEndCard");
   if (opts.candidatesIn) cli.push("--candidatesIn", opts.candidatesIn);
   if (args.enSubsDir) cli.push("--enSubsDir", args.enSubsDir);
+  if (args.audioLang) cli.push("--audioLang", args.audioLang);
   if (args.verbose) cli.push("--verbose");
   return cli;
 }
@@ -877,6 +882,8 @@ function runShortRenderStage(args, outRoot) {
     words: [],
   };
 
+  const manifestPath = path.resolve(outRoot, "render-manifest.json");
+
   for (let i = 0; i < targets.length; i++) {
     const word = targets[i];
     const rec = rerankMap.get(word);
@@ -891,6 +898,7 @@ function runShortRenderStage(args, outRoot) {
         output,
         error: null,
       });
+      writeJson(manifestPath, manifest);
       continue;
     }
 
@@ -923,7 +931,7 @@ function runShortRenderStage(args, outRoot) {
     );
 
     let note = null;
-    if (picks.length === 0 && dbPoolCap > 0) {
+    if (picks.length === 0 && dbPoolCap > 0 && status === "ok") {
       picks = Array.from(
         { length: Math.min(args.topK, dbPoolCap) },
         (_, idx) => idx + 1,
@@ -931,7 +939,7 @@ function runShortRenderStage(args, outRoot) {
       note = "db_fallback_topk";
     }
 
-    if (!canRenderStatus && picks.length === 0) {
+    if (!canRenderStatus) {
       manifest.summary.skipped++;
       manifest.words.push({
         word,
@@ -945,6 +953,7 @@ function runShortRenderStage(args, outRoot) {
         output,
         error: null,
       });
+      writeJson(manifestPath, manifest);
       continue;
     }
 
@@ -982,6 +991,7 @@ function runShortRenderStage(args, outRoot) {
           output,
           error: null,
         });
+        writeJson(manifestPath, manifest);
         continue;
       }
     }
@@ -1062,9 +1072,10 @@ function runShortRenderStage(args, outRoot) {
         }
       }
     }
+
+    writeJson(manifestPath, manifest);
   }
 
-  const manifestPath = path.resolve(outRoot, "render-manifest.json");
   writeJson(manifestPath, manifest);
   console.log("");
   console.log(`Auto-curation manifest: ${manifestPath}`);

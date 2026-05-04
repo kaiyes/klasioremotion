@@ -311,7 +311,7 @@ function writeJson(filePath, value) {
   const abs = path.resolve(filePath);
   ensureDir(path.dirname(abs));
   const tmp = `${abs}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
+  fs.writeFileSync(tmp, JSON.stringify(value));
   fs.renameSync(tmp, abs);
 }
 

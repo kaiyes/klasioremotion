@@ -88,6 +88,7 @@ function parseArgs(argv) {
     brandQrUrl: "http://bundai.app/",
     showQr: true,
     appendEndCard: true,
+    audioLang: "jpn",
     saveVersionedCopy: false,
     cleanOutputs: true,
     verbose: false,
@@ -342,6 +343,10 @@ function parseArgs(argv) {
       case "saveVersionedCopy":
         args.saveVersionedCopy = true;
         break;
+      case "audioLang":
+        args.audioLang = String(v || "").trim();
+        takeNext();
+        break;
       case "verbose":
         args.verbose = true;
         break;
@@ -413,6 +418,7 @@ Options:
   --brandQrUrl <url>         Branding QR URL (default: http://bundai.app/)
   --noQr                     Disable QR code on the branding block
   --noEndCard                Disable appending source_content/card.mp4
+  --audioLang <lang>         Preferred audio language for clip extraction (default: jpn)
   --saveVersionedCopy        Save a timestamped duplicate next to the main output
   --keepOutputs              Keep old out dirs (default: clean on each run)
   --cleanOutputs             Force clean outputs before run
@@ -687,7 +693,7 @@ function loadWordList(wordList) {
 
 function findWordMeta(entries, query) {
   if (!query || !Array.isArray(entries) || entries.length === 0) return { reading: "", meaning: "" };
-  const found = entries.find((x) => x?.word === query);
+  const found = entries.find((x) => x?.word === query || x?.kanji === query);
   return {
     reading: found?.reading || "",
     meaning: normalizeMeaning(found?.meaning || ""),
@@ -791,7 +797,7 @@ function buildSegmentOverlaySvg({
   const cardRightCenterX = headerRectX + cardThirdW * 2.5;
   const cardLeftText = isInstagram ? queryRomaji || "" : "";
   const cardRightText = isInstagram ? queryReading || "" : "";
-  const cardMeaningText = isInstagram ? queryMeaning || "Japanese in context" : "";
+  const cardMeaningText = isInstagram ? queryMeaning || "" : "";
   const leftUnits = Math.max(1, measureUnits(cardLeftText));
   const rightUnits = Math.max(1, measureUnits(cardRightText));
   const meaningUnits = Math.max(1, measureUnits(cardMeaningText));
@@ -965,7 +971,7 @@ function buildSegmentOverlaySvg({
   <text x="50%" y="${readingY}" text-anchor="middle" font-family="${fontJP}" font-size="${54 * s}" font-weight="700" fill="#1e3a34">${svgEscape(queryReading)}</text>
   <text x="50%" y="${romajiY}" text-anchor="middle" font-family="${fontEN}" font-size="${32 * s}" font-weight="700" fill="#1e3a34">${svgEscape(queryRomaji)}</text>
   <text x="50%" y="${kanjiY}" text-anchor="middle" font-family="${fontJP}" font-size="${126 * s}" font-weight="800" fill="#ffd900" stroke="#000000" stroke-width="${4 * s}" paint-order="stroke fill">${svgEscape(query)}</text>
-  <text x="50%" y="${meaningY}" text-anchor="middle" font-family="${fontEN}" font-size="${48 * s}" font-weight="800" fill="#1e3a34">${svgEscape(queryMeaning || "Japanese in context")}</text>`
+  <text x="50%" y="${meaningY}" text-anchor="middle" font-family="${fontEN}" font-size="${48 * s}" font-weight="800" fill="#1e3a34">${svgEscape(queryMeaning || "")}</text>`
   }
   ${brandBlock}
   ${videoBrandBug}
@@ -1205,6 +1211,7 @@ async function main() {
   }
   if (Number.isFinite(args.avMinAsrSim)) extractArgs.push("--avMinAsrSim", String(args.avMinAsrSim));
   if (Number.isFinite(args.avMinVisionSim)) extractArgs.push("--avMinVisionSim", String(args.avMinVisionSim));
+  if (args.audioLang) extractArgs.push("--audioLang", args.audioLang);
   if (args.avFailPolicy) extractArgs.push("--avFailPolicy", String(args.avFailPolicy));
   if (Number.isFinite(args.avTimeoutMs)) extractArgs.push("--avTimeoutMs", String(args.avTimeoutMs));
   if (args.verbose) extractArgs.push("--verbose");

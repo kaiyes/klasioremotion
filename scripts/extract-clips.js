@@ -140,6 +140,7 @@ function parseArgs(argv) {
     avTimeoutMs: 45000,
     videoExts: DEFAULT_VIDEO_EXTS,
     appendEndCard: true,
+    audioLang: "jpn",
     verbose: false,
   };
 
@@ -447,6 +448,10 @@ function parseArgs(argv) {
         args.highlightColor = value;
         takeNext();
         break;
+      case "audioLang":
+        args.audioLang = String(value || "").trim();
+        takeNext();
+        break;
       case "videoExts":
         args.videoExts = String(value)
           .split(",")
@@ -522,6 +527,7 @@ Options:
   --wordList            JSON list with fields {word, reading, romaji, meaning} for header/meaning lookup
   --meaning             Override meaning text in header and EN highlight
   --highlightColor      ASS color for highlight (BGR hex, e.g. &H00D6FF&)
+  --audioLang            Preferred audio language tag for clip extraction (default: jpn)
   --sentenceGapMs       Max gap between subtitle items to still be the same sentence (default: 800)
   --maxSentenceItems    Max subtitle items to merge into a "sentence" (default: 8)
   --clipFit             Trim JP/EN to clip-fit clauses around the matched word (default: on)
@@ -4220,7 +4226,7 @@ function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });
 }
 
-function runFfmpegExtract({ input, startMs, endMs, output, verbose }) {
+function runFfmpegExtract({ input, startMs, endMs, output, verbose, audioLang }) {
   const start = msToFfmpegTime(startMs);
   const durationMs = Math.max(0, endMs - startMs);
   const duration = (durationMs / 1000).toFixed(3);
@@ -4248,8 +4254,11 @@ function runFfmpegExtract({ input, startMs, endMs, output, verbose }) {
     "192k",
     "-movflags",
     "+faststart",
-    output,
   ];
+  if (audioLang) {
+    args.push("-map", "0:V", "-map", `0:a:m:language:${audioLang}`);
+  }
+  args.push(output);
 
   if (verbose) console.log(["ffmpeg", ...args].join(" "));
   const res = spawnSync("ffmpeg", args, { stdio: "inherit" });
@@ -4461,7 +4470,7 @@ async function main() {
       console.log(`Ignoring --wordList (file not found): ${args.wordList}`);
     }
   }
-  const queryWordEntry = wordListEntries?.find((x) => x?.word === args.query) ?? null;
+  const queryWordEntry = wordListEntries?.find((x) => x?.word === args.query || x?.kanji === args.query) ?? null;
   let matchTokenizer = null;
   try {
     const dicPath = path.join("node_modules", "kuromoji", "dict");
@@ -4901,6 +4910,7 @@ async function main() {
       endMs: c.clipEndMs,
       output: c.output,
       verbose: args.verbose,
+      audioLang: args.audioLang,
     });
   }
 
@@ -4912,7 +4922,7 @@ async function main() {
 
     const headerWord = args.matchContains || args.query;
     const headerWordEntry =
-      wordListEntries?.find((x) => x?.word === headerWord) ?? queryWordEntry;
+      wordListEntries?.find((x) => x?.word === headerWord || x?.kanji === headerWord) ?? queryWordEntry;
     const isFamilyMode = Boolean(args.matchContains && args.matchContains !== args.query);
     let meaning =
       args.meaning ??

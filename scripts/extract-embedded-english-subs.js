@@ -177,8 +177,9 @@ function pickEnglishDialogStream(streams) {
     let score = 0;
     if (s.language === "eng") score += 120;
     if (s.dispositionDefault) score += 25;
-    if (/full|dialog|subtitle|subtitles|complete|complet/.test(s.title)) score += 35;
-    if (/sign|song|forced/.test(s.title)) score -= 150;
+    const hasDialog = /full|dialog|subtitle|subtitles|complete|complet/.test(s.title);
+    if (hasDialog) score += 35;
+    if (/sign|song|forced/.test(s.title) && !hasDialog) score -= 150;
     if (s.codecName === "ass") score += 5;
     if (!best || score > best.score) best = { ...s, score };
   }
